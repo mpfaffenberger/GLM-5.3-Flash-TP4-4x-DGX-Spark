@@ -1,0 +1,44 @@
+# syntax=docker/dockerfile:1
+# Patch GLM-5.3 NoPE into FlashInfer's fixed SM120/SM121 sparse-MLA ABI.
+ARG BASE_IMAGE=vllm/vllm-openai:glm53-flash
+ARG VLLM_SOURCE_COMMIT=0a5ad6f0d42c1ace54f27d7dd6a852be86e42148
+
+FROM ${BASE_IMAGE} AS extension-builder
+ARG VLLM_SOURCE_COMMIT
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --no-cache-dir cmake==3.31.6
+
+RUN git clone https://github.com/vllm-project/vllm.git /src \
+    && git -C /src checkout "${VLLM_SOURCE_COMMIT}"
+COPY patches/vllm-glm53-nope-sm121.patch /tmp/vllm-glm53-nope-sm121.patch
+RUN git -C /src apply /tmp/vllm-glm53-nope-sm121.patch
+
+ENV TORCH_CUDA_ARCH_LIST=12.0
+RUN cmake -S /src -B /build -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DVLLM_TARGET_DEVICE=cuda \
+      -DVLLM_PYTHON_EXECUTABLE=/usr/bin/python3 \
+      -DNVCC_THREADS=2 \
+      -DCUDA_nvrtc_LIBRARY=/usr/local/cuda-13.0/targets/sbsa-linux/lib/libnvrtc.so.13 \
+      -DCUDA_NVRTC_LIB=/usr/local/cuda-13.0/targets/sbsa-linux/lib/libnvrtc.so.13 \
+    && cmake --build /build -j=4 --target _C_stable_libtorch \
+    && find /build -type f -name '_C_stable_libtorch*.so' -exec cp '{}' /patched_C_stable_libtorch.abi3.so \; \
+    && test -s /patched_C_stable_libtorch.abi3.so
+
+FROM ${BASE_IMAGE}
+COPY --from=extension-builder /patched_C_stable_libtorch.abi3.so \
+  /usr/local/lib/python3.12/dist-packages/vllm/_C_stable_libtorch.abi3.so
+COPY patches/patch_flashinfer_sm121_backend.py /tmp/patch_flashinfer_sm121_backend.py
+COPY patches/patch_sparse_only_flashinfer_autotune.py /tmp/patch_sparse_only_flashinfer_autotune.py
+COPY scripts/test_nope_cache_kernel.py /usr/local/bin/test_nope_cache_kernel.py
+COPY scripts/test_nope_backend_adapter.py /usr/local/bin/test_nope_backend_adapter.py
+RUN python3 /tmp/patch_flashinfer_sm121_backend.py \
+    && python3 /tmp/patch_sparse_only_flashinfer_autotune.py \
+    && rm /tmp/patch_flashinfer_sm121_backend.py \
+       /tmp/patch_sparse_only_flashinfer_autotune.py \
+    && pip install --no-cache-dir 'ray[default]==2.58.0'
+
+LABEL ai.code-puppy.glm53-nope-sm121="zero-padded-fixed-656-byte-abi"

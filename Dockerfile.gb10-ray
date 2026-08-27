@@ -1,0 +1,8 @@
+# Dedicated upstream GLM-5.3 image plus the multi-node executor dependency.
+# The upstream image deliberately omits Ray because its published examples are
+# single-node. Four one-GPU DGX Sparks require Ray for cross-node TP=4.
+FROM vllm/vllm-openai:glm53-flash
+
+ARG RAY_VERSION=2.58.0
+RUN python3 -m pip install --no-cache-dir "ray[default]==${RAY_VERSION}" \
+    && python3 -c "import ray; assert ray.__version__ == '${RAY_VERSION}'"

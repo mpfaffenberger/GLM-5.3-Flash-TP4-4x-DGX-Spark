@@ -1,0 +1,15 @@
+# Fast rollout image after Dockerfile.gb10-nope has produced/tested the extension.
+# Build context must contain patched_C_stable_libtorch.abi3.so and the two tests.
+ARG BASE_IMAGE=glm53-vllm-gb10:ray-2.58
+FROM ${BASE_IMAGE}
+COPY patched_C_stable_libtorch.abi3.so \
+  /usr/local/lib/python3.12/dist-packages/vllm/_C_stable_libtorch.abi3.so
+COPY patch_flashinfer_sm121_backend.py /tmp/patch_flashinfer_sm121_backend.py
+COPY patch_sparse_only_flashinfer_autotune.py /tmp/patch_sparse_only_flashinfer_autotune.py
+COPY test_nope_cache_kernel.py /usr/local/bin/test_nope_cache_kernel.py
+COPY test_nope_backend_adapter.py /usr/local/bin/test_nope_backend_adapter.py
+RUN python3 /tmp/patch_flashinfer_sm121_backend.py \
+    && python3 /tmp/patch_sparse_only_flashinfer_autotune.py \
+    && rm /tmp/patch_flashinfer_sm121_backend.py \
+       /tmp/patch_sparse_only_flashinfer_autotune.py
+LABEL ai.code-puppy.glm53-nope-sm121="zero-padded-fixed-656-byte-abi"

@@ -1,0 +1,72 @@
+recipe_version: "2"
+name: GLM-5.3-Flash-FP8-TP4-MTP5
+model: unsloth/GLM-5.3-Flash-FP8
+# Built from upstream's dedicated arm64 GLM-5.3 image plus Ray for multi-node TP.
+container: glm53-vllm-gb10:nope-sm121-ray-2.58
+runtime: vllm
+cluster_only: true
+solo_only: false
+min_nodes: 4
+
+defaults:
+  model: unsloth/GLM-5.3-Flash-FP8
+  revision: a160e2291674d9e3e92e98fd82faa2544a2867a3
+  served_model_name: glm-5.3-flash-fp8
+  host: 0.0.0.0
+  port: 8000
+  tensor_parallel: 4
+  gpu_memory_utilization: 0.80
+  max_model_len: 262144
+  max_num_batched_tokens: 8192
+  max_num_seqs: 4
+  kv_cache_dtype: fp8
+  num_speculative_tokens: 5
+
+env:
+  HF_HUB_OFFLINE: "1"
+  TRANSFORMERS_OFFLINE: "1"
+  PYTORCH_CUDA_ALLOC_CONF: expandable_segments:False
+  TORCH_CUDA_ARCH_LIST: 12.1a
+  VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
+  VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
+  VLLM_LOGGING_LEVEL: INFO
+  NCCL_CUMEM_ENABLE: "0"
+  NCCL_NVLS_ENABLE: "0"
+
+command: |
+  vllm serve {model} \
+    --revision {revision} \
+    --served-model-name {served_model_name} \
+    --host {host} \
+    --port {port} \
+    --tensor-parallel-size {tensor_parallel} \
+    --distributed-executor-backend ray \
+    --gpu-memory-utilization {gpu_memory_utilization} \
+    --max-model-len {max_model_len} \
+    --max-num-batched-tokens {max_num_batched_tokens} \
+    --max-num-seqs {max_num_seqs} \
+    --kv-cache-dtype {kv_cache_dtype} \
+    --enable-prefix-caching \
+    --reasoning-parser glm45 \
+    --tool-call-parser glm47 \
+    --enable-auto-tool-choice \
+    --speculative-config '{{"method":"mtp","num_speculative_tokens":{num_speculative_tokens}}}'
+
+metadata:
+  status: validated-fp8-language-path
+  architecture: Glm5NextForConditionalGeneration
+  model_params: 320B-total-18B-active
+  quantization: fp8-block-128x128
+  kv_dtype: fp8
+  checkpoint_bytes: 328337455672
+  checkpoint_shards: 62
+  notes: |
+    FP8 weights only: BF16 weights are too large for four 121 GiB DGX Sparks.
+    The stock dedicated image selects FLASHINFER_MLA_SPARSE_SM120 on GB10 and
+    rejects GLM-5.3 NoPE (pe_dim=0). This recipe's tested fixed-ABI patch keeps
+    FlashInfer's 656-byte cache layout, zero-fills its RoPE region, pads NoPE
+    queries only at the backend boundary, and adapts the sparse index width.
+    TP=4 weight load, CUDA graph capture, MTP, smoke tests, and C=1 decode are
+    validated. Multimodal serving remains outside the validated profile.
+executor_config:
+  user: root
