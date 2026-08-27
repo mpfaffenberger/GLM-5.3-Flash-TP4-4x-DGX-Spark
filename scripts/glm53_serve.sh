@@ -14,6 +14,7 @@ GMU=${GLM53_GPU_MEMORY_UTILIZATION:-0.80}
 KV_CACHE_DTYPE=${GLM53_KV_CACHE_DTYPE:-fp8}
 MTP_TOKENS=${GLM53_MTP_TOKENS:-5}
 FLASHINFER_AUTOTUNE=${GLM53_FLASHINFER_AUTOTUNE:-0}
+MOE_BACKEND=${GLM53_MOE_BACKEND:-auto}
 LOG=${GLM53_LOG:-$HOME/glm53-serve.log}
 SESSION=${GLM53_TMUX_SESSION:-glm53serve}
 
@@ -26,6 +27,11 @@ fi
 AUTOTUNE_ARG=--no-enable-flashinfer-autotune
 if [[ "$FLASHINFER_AUTOTUNE" == 1 ]]; then
   AUTOTUNE_ARG=--enable-flashinfer-autotune
+fi
+
+MOE_ARGS=""
+if [[ "$MOE_BACKEND" != auto ]]; then
+  MOE_ARGS="--moe-backend $MOE_BACKEND"
 fi
 
 SPEC_ARGS=""
@@ -49,6 +55,7 @@ CMD="vllm serve $MODEL \\
   --tool-call-parser glm47 \\
   --enable-auto-tool-choice \\
   $AUTOTUNE_ARG \\
+  $MOE_ARGS \\
   $SPEC_ARGS"
 
 mkdir -p "$(dirname "$LOG")"
@@ -58,5 +65,5 @@ tmux new-session -d -s "$SESSION" \
   "docker exec $NAME bash -lc $(printf %q "$CMD") > $(printf %q "$LOG") 2>&1; echo SERVE_EXIT=\$? >> $(printf %q "$LOG")"
 
 sleep 3
-echo "serve launched: session=$SESSION log=$LOG model=$SERVED_NAME kv_cache=$KV_CACHE_DTYPE mtp_tokens=$MTP_TOKENS flashinfer_autotune=$FLASHINFER_AUTOTUNE"
+echo "serve launched: session=$SESSION log=$LOG model=$SERVED_NAME kv_cache=$KV_CACHE_DTYPE mtp_tokens=$MTP_TOKENS moe_backend=$MOE_BACKEND flashinfer_autotune=$FLASHINFER_AUTOTUNE"
 tmux ls
