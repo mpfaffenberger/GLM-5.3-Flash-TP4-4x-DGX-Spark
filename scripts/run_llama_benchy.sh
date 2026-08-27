@@ -32,7 +32,6 @@ command=(
   --depth 0 4096 8192 16384 32768 65535 100000
   --pp 2048
   --tg 128
-  --exact-tg
   --runs 3
   # GLM defaults to reasoning; the harness's tiny "Paris" gate can consume
   # its whole budget in reasoning_content despite a healthy engine.
