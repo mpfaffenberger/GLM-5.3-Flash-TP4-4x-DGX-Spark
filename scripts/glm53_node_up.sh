@@ -21,7 +21,10 @@ SOCKET_IFACE=${GLM53_SOCKET_IFACE:-enp1s0f1np1}
 MTU_IFACE=${GLM53_MTU_IFACE:-enp1s0f1np1}
 
 if [[ "$GID" == auto ]]; then
-  GID=$(show_gids | awk -v ip="$SELF_IP" '$5 == ip && $6 == "v2" { print $3; exit }')
+  GID=$(show_gids | awk -v ip="$SELF_IP" '
+    $5 == ip && $6 == "v2" && first == "" { first = $3 }
+    END { print first }
+  ')
   if [[ -z "$GID" ]]; then
     echo "ERROR: no RoCE-v2 GID found for $SELF_IP" >&2
     exit 1
