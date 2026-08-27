@@ -3,12 +3,13 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-IMAGE=glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58
+IMAGE=${GLM53_IMAGE:-glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58}
 MTP_TOKENS=${GLM53_TRIAL_MTP_TOKENS:-3}
 FLASHINFER_AUTOTUNE=${GLM53_TRIAL_FLASHINFER_AUTOTUNE:-1}
 MODEL_CACHE_DIR=${GLM53_MODEL_CACHE_DIR:-models--unsloth--GLM-5.3-Flash-FP8}
-LOG=$HOME/glm53-mtp${MTP_TOKENS}-sparse-tuned-serve.log
-RESULT=$HOME/glm53-mtp${MTP_TOKENS}-sparse-tuned-c1.log
+TRIAL_LABEL=${GLM53_TRIAL_LABEL:-mtp${MTP_TOKENS}-sparse-tuned}
+LOG=$HOME/glm53-${TRIAL_LABEL}-serve.log
+RESULT=$HOME/glm53-${TRIAL_LABEL}-c1.log
 
 cleanup_local() {
   tmux kill-session -t glm53serve 2>/dev/null || true
