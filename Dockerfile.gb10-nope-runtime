@@ -6,10 +6,13 @@ COPY patched_C_stable_libtorch.abi3.so \
   /usr/local/lib/python3.12/dist-packages/vllm/_C_stable_libtorch.abi3.so
 COPY patch_flashinfer_sm121_backend.py /tmp/patch_flashinfer_sm121_backend.py
 COPY patch_sparse_only_flashinfer_autotune.py /tmp/patch_sparse_only_flashinfer_autotune.py
+COPY patch_b12x_glm53_swiglu.py /tmp/patch_b12x_glm53_swiglu.py
 COPY test_nope_cache_kernel.py /usr/local/bin/test_nope_cache_kernel.py
 COPY test_nope_backend_adapter.py /usr/local/bin/test_nope_backend_adapter.py
 RUN python3 /tmp/patch_flashinfer_sm121_backend.py \
     && python3 /tmp/patch_sparse_only_flashinfer_autotune.py \
+    && python3 /tmp/patch_b12x_glm53_swiglu.py \
     && rm /tmp/patch_flashinfer_sm121_backend.py \
-       /tmp/patch_sparse_only_flashinfer_autotune.py
+       /tmp/patch_sparse_only_flashinfer_autotune.py \
+       /tmp/patch_b12x_glm53_swiglu.py
 LABEL ai.code-puppy.glm53-nope-sm121="zero-padded-fixed-656-byte-abi"
