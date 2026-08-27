@@ -4,10 +4,11 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 BASE_URL=${GLM53_BASE_URL:-http://127.0.0.1:8000/v1}
-MODEL=unsloth/GLM-5.3-Flash-FP8
-SERVED_MODEL=glm-5.3-flash-fp8
-REVISION=a160e2291674d9e3e92e98fd82faa2544a2867a3
-TOKENIZER=${GLM53_TOKENIZER:-$HOME/.cache/huggingface/hub/models--unsloth--GLM-5.3-Flash-FP8/snapshots/$REVISION}
+MODEL=${GLM53_MODEL:-unsloth/GLM-5.3-Flash-FP8}
+SERVED_MODEL=${GLM53_SERVED_NAME:-glm-5.3-flash-fp8}
+REVISION=${GLM53_REVISION:-a160e2291674d9e3e92e98fd82faa2544a2867a3}
+MODEL_CACHE_DIR=${GLM53_MODEL_CACHE_DIR:-models--unsloth--GLM-5.3-Flash-FP8}
+TOKENIZER=${GLM53_TOKENIZER:-$HOME/.cache/huggingface/hub/$MODEL_CACHE_DIR/snapshots/$REVISION}
 STAMP=$(date -u +%Y%m%d-%H%M%S)
 RESULT_DIR=${1:-$ROOT/results/llama-benchy-spark-arena-v2-$STAMP}
 
@@ -31,7 +32,11 @@ command=(
   --depth 0 4096 8192 16384 32768 65535 100000
   --pp 2048
   --tg 128
+  --exact-tg
   --runs 3
+  # GLM defaults to reasoning; the harness's tiny "Paris" gate can consume
+  # its whole budget in reasoning_content despite a healthy engine.
+  --skip-coherence
   --enable-prefix-caching
   --concurrency 1 2 5 10
   --save-result "$RESULT_FILE"
