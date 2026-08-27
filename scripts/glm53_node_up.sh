@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Start one GLM-5.3 TP=4 container and start/join Ray.
-# Usage: glm53_node_up.sh <head|worker> <self_fabric_ip> <head_fabric_ip> <gid_index>
+# Usage: glm53_node_up.sh <head|worker> <self_fabric_ip> <head_fabric_ip> <gid_index|auto>
 set -euo pipefail
 
 if [[ $# -ne 4 || ! "$1" =~ ^(head|worker)$ ]]; then
-  echo "usage: $0 <head|worker> <self_fabric_ip> <head_fabric_ip> <gid_index>" >&2
+  echo "usage: $0 <head|worker> <self_fabric_ip> <head_fabric_ip> <gid_index|auto>" >&2
   exit 2
 fi
 
@@ -19,6 +19,14 @@ MODEL_CACHE_DIR=${GLM53_MODEL_CACHE_DIR:-models--unsloth--GLM-5.3-Flash-FP8}
 HCA=${GLM53_NCCL_HCA:-rocep1s0f1}
 SOCKET_IFACE=${GLM53_SOCKET_IFACE:-enp1s0f1np1}
 MTU_IFACE=${GLM53_MTU_IFACE:-enp1s0f1np1}
+
+if [[ "$GID" == auto ]]; then
+  GID=$(show_gids | awk -v ip="$SELF_IP" '$5 == ip && $6 == "v2" { print $3; exit }')
+  if [[ -z "$GID" ]]; then
+    echo "ERROR: no RoCE-v2 GID found for $SELF_IP" >&2
+    exit 1
+  fi
+fi
 
 if [[ ! -d /dev/infiniband ]]; then
   echo "ERROR: /dev/infiniband is missing on the host" >&2

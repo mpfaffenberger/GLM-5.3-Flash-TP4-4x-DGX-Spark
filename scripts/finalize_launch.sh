@@ -52,9 +52,9 @@ done
 # The DeepSeek head has already exited. Stop its idle workers only when each GLM
 # replacement is fully staged and ready to join Ray.
 remote 10.0.0.150 \
-  'chmod +x ~/glm53_node_up.sh; docker stop deepseek-v4-tp4-vllm-dspark-1 >/dev/null 2>&1 || true; ~/glm53_node_up.sh worker 10.0.0.150 10.0.0.46 3'
+  'chmod +x ~/glm53_node_up.sh; docker stop deepseek-v4-tp4-vllm-dspark-1 >/dev/null 2>&1 || true; ~/glm53_node_up.sh worker 10.0.0.150 10.0.0.46 auto'
 remote 10.0.0.13 \
-  'chmod +x ~/glm53_node_up.sh; docker stop deepseek-v4-tp4-vllm-dspark-1 >/dev/null 2>&1 || true; ~/glm53_node_up.sh worker 10.0.0.13 10.0.0.46 6'
+  'chmod +x ~/glm53_node_up.sh; docker stop deepseek-v4-tp4-vllm-dspark-1 >/dev/null 2>&1 || true; ~/glm53_node_up.sh worker 10.0.0.13 10.0.0.46 auto'
 
 for attempt in $(seq 1 30); do
   status=$(docker exec glm53-tp4 ray status 2>&1 || true)

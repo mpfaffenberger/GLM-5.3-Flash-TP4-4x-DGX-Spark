@@ -39,16 +39,16 @@ done
 for pid in "${pids[@]}"; do wait "$pid"; done
 
 GLM53_IMAGE=$IMAGE "$ROOT/scripts/glm53_node_up.sh" \
-  head 10.0.0.46 10.0.0.46 3 >/tmp/glm53-sparse-head-up.log
+  head 10.0.0.46 10.0.0.46 auto >/tmp/glm53-sparse-head-up.log
 
 ssh -o BatchMode=yes mpfaffenberger@10.0.0.150 \
-  "GLM53_IMAGE=$IMAGE GLM53_MODEL_CACHE_DIR=$MODEL_CACHE_DIR ~/glm53_node_up.sh worker 10.0.0.150 10.0.0.46 3" &
+  "GLM53_IMAGE=$IMAGE GLM53_MODEL_CACHE_DIR=$MODEL_CACHE_DIR ~/glm53_node_up.sh worker 10.0.0.150 10.0.0.46 auto" &
 pids=($!)
 ssh -o BatchMode=yes mpfaffenberger@10.0.0.13 \
-  "GLM53_IMAGE=$IMAGE GLM53_MODEL_CACHE_DIR=$MODEL_CACHE_DIR ~/glm53_node_up.sh worker 10.0.0.13 10.0.0.46 6" &
+  "GLM53_IMAGE=$IMAGE GLM53_MODEL_CACHE_DIR=$MODEL_CACHE_DIR ~/glm53_node_up.sh worker 10.0.0.13 10.0.0.46 auto" &
 pids+=($!)
 ssh -o BatchMode=yes mpfaffenberger@10.0.0.246 \
-  "GLM53_IMAGE=$IMAGE GLM53_MODEL_CACHE_DIR=$MODEL_CACHE_DIR ~/glm53_node_up.sh worker 10.0.0.246 10.0.0.46 3" &
+  "GLM53_IMAGE=$IMAGE GLM53_MODEL_CACHE_DIR=$MODEL_CACHE_DIR ~/glm53_node_up.sh worker 10.0.0.246 10.0.0.46 auto" &
 pids+=($!)
 for pid in "${pids[@]}"; do wait "$pid"; done
 
