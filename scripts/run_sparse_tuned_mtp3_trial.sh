@@ -6,6 +6,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 IMAGE=${GLM53_IMAGE:-glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58}
 MTP_TOKENS=${GLM53_TRIAL_MTP_TOKENS:-3}
 FLASHINFER_AUTOTUNE=${GLM53_TRIAL_FLASHINFER_AUTOTUNE:-1}
+DROP_CACHES=${GLM53_DROP_CACHES:-1}
 MODEL_CACHE_DIR=${GLM53_MODEL_CACHE_DIR:-models--unsloth--GLM-5.3-Flash-FP8}
 TRIAL_LABEL=${GLM53_TRIAL_LABEL:-mtp${MTP_TOKENS}-sparse-tuned}
 LOG=$HOME/glm53-${TRIAL_LABEL}-serve.log
@@ -16,7 +17,9 @@ cleanup_local() {
   docker rm -f glm53-tp4 >/dev/null 2>&1 || true
   sudo -n modprobe -r nvidia_uvm
   sudo -n modprobe nvidia_uvm
-  sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+  if [[ "$DROP_CACHES" == 1 ]]; then
+    sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
+  fi
 }
 
 cleanup_remote() {
@@ -24,7 +27,7 @@ cleanup_remote() {
   ssh -o BatchMode=yes "mpfaffenberger@$host" \
     "docker rm -f glm53-tp4 >/dev/null 2>&1 || true; \
      sudo -n modprobe -r nvidia_uvm && sudo -n modprobe nvidia_uvm; \
-     sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'"
+     if [[ '$DROP_CACHES' == 1 ]]; then sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'; fi"
 }
 
 cleanup_local &

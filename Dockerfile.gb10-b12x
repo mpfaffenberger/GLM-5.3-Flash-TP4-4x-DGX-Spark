@@ -2,8 +2,11 @@
 ARG BASE_IMAGE=glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58
 FROM ${BASE_IMAGE}
 COPY patches/patch_b12x_glm53_swiglu.py /tmp/patch_b12x_glm53_swiglu.py
+COPY patches/patch_glm53_sm121_indexer_quant_block.py /tmp/patch_glm53_sm121_indexer_quant_block.py
 RUN python3 /tmp/patch_b12x_glm53_swiglu.py \
+    && python3 /tmp/patch_glm53_sm121_indexer_quant_block.py \
     && rm /tmp/patch_b12x_glm53_swiglu.py \
+       /tmp/patch_glm53_sm121_indexer_quant_block.py \
     && grep -q 'swiglu_limit=self.swiglu_limit' \
        /usr/local/lib/python3.12/dist-packages/vllm/model_executor/layers/fused_moe/experts/flashinfer_b12x_moe.py
 LABEL ai.code-puppy.glm53-b12x="clamped-swiglu-sm121-experimental"
