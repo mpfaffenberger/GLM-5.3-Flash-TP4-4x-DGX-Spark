@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 IMAGE=glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58
 MTP_TOKENS=${GLM53_TRIAL_MTP_TOKENS:-3}
+FLASHINFER_AUTOTUNE=${GLM53_TRIAL_FLASHINFER_AUTOTUNE:-1}
 MODEL_CACHE_DIR=${GLM53_MODEL_CACHE_DIR:-models--unsloth--GLM-5.3-Flash-FP8}
 LOG=$HOME/glm53-mtp${MTP_TOKENS}-sparse-tuned-serve.log
 RESULT=$HOME/glm53-mtp${MTP_TOKENS}-sparse-tuned-c1.log
@@ -60,14 +61,16 @@ for attempt in $(seq 1 60); do
 done
 
 GLM53_MTP_TOKENS=$MTP_TOKENS \
-GLM53_FLASHINFER_AUTOTUNE=1 \
+GLM53_FLASHINFER_AUTOTUNE=$FLASHINFER_AUTOTUNE \
 GLM53_LOG=$LOG \
   "$ROOT/scripts/glm53_serve.sh"
 
 for attempt in $(seq 1 300); do
   if curl -fsS --max-time 3 http://127.0.0.1:8000/v1/models >/dev/null 2>&1; then
-    grep -q 'Autotuning FlashInfer SM120 sparse MLA' "$LOG"
-    grep -q 'dedicated sparse-MLA tuning remains enabled' "$LOG"
+    if [[ "$FLASHINFER_AUTOTUNE" == 1 ]]; then
+      grep -q 'Autotuning FlashInfer SM120 sparse MLA' "$LOG"
+      grep -q 'dedicated sparse-MLA tuning remains enabled' "$LOG"
+    fi
     GLM53_BENCH_RUNS=5 "$ROOT/scripts/bench_c1.sh" | tee "$RESULT"
     echo "SPARSE_TUNED_MTP${MTP_TOKENS}_TRIAL_OK"
     exit 0
