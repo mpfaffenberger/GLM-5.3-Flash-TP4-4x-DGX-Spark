@@ -133,7 +133,7 @@ Change one variable at a time:
 
 1. raise GPU memory utilization in 0.01 steps;
 2. test 512K, then 1M context ceilings;
-3. compare MTP depths with identical prompts; k=3 measured 31.35 tok/s median C=1 in the validated FP8 profile;
+3. compare MTP depths with identical prompts; k=3 measured 32.07 tok/s median C=1 in the clean restored FP8 profile;
 4. increase max sequences based on measured KV capacity;
 5. add multimodal encoder serving only after the language path is stable.
 

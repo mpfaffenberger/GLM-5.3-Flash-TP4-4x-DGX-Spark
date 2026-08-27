@@ -53,6 +53,22 @@ controlled tuning experiment. If a stalled run leaves GB10 unified memory
 pinned, remove the containers, reload `nvidia_uvm`, drop filesystem caches, and
 verify about 117 GiB is available on every node before restarting.
 
+## NVFP4 is fast enough to benchmark but returns repeated tokens
+
+Treat coherence as a hard gate before publishing throughput. The tested ModelOpt
+NVFP4 checkpoint with `FLASHINFER_CUTLASS`, MTP k=5, and memory utilization
+0.70 reached 17.42 tok/s median C=1, but deterministic and sampled requests both
+degenerated into repeated `lockhandle`/`lock` tokens with thinking enabled or
+disabled. Those numbers are not a valid serving result. The experimental B12x
+backend also spent over 40 minutes in thousands of synchronous per-expert
+`_load_w2` copies and never reached inference. Use the validated FP8/DeepGemm
+profile until NVFP4 passes an independent coherence gate and B12x's expert
+layout can be prepacked or loaded in batches.
+
+GB10 unified memory makes retained filesystem cache harmful during these large
+loads. Drop caches before a controlled relaunch; do not preserve tens of GiB of
+checkpoint page cache while allocating model weights.
+
 ## 1M context fails after 256K succeeds
 
 That is capacity tuning, not baseline failure. Record live KV-cache tokens, lower max sequences, and raise memory utilization cautiously. Test 512K before 1M after the SM121 kernel blocker is resolved. FP8 KV reduces cache cost but does not repeal arithmetic.

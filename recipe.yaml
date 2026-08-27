@@ -1,8 +1,8 @@
 recipe_version: "2"
-name: GLM-5.3-Flash-FP8-TP4-MTP5
+name: GLM-5.3-Flash-FP8-TP4-MTP3
 model: unsloth/GLM-5.3-Flash-FP8
 # Built from upstream's dedicated arm64 GLM-5.3 image plus Ray for multi-node TP.
-container: glm53-vllm-gb10:nope-sm121-ray-2.58
+container: glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58
 runtime: vllm
 cluster_only: true
 solo_only: false
@@ -20,7 +20,7 @@ defaults:
   max_num_batched_tokens: 8192
   max_num_seqs: 4
   kv_cache_dtype: fp8
-  num_speculative_tokens: 5
+  num_speculative_tokens: 3
 
 env:
   HF_HUB_OFFLINE: "1"

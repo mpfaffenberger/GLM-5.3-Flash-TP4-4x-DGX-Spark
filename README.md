@@ -2,7 +2,7 @@
 
 Serve GLM-5.3-Flash across four NVIDIA DGX Sparks (GB10, `sm_121a`) over dedicated RoCE. The validated baseline uses [`unsloth/GLM-5.3-Flash-FP8`](https://huggingface.co/unsloth/GLM-5.3-Flash-FP8); the recipe also includes staging and launch support for [`LibertAIDAI/GLM-5.3-Flash-NVFP4`](https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4).
 
-> **Status:** the patched FP8 TP=4 language path is validated on four GB10 nodes: all 62 shards load, NoPE sparse-MLA cache packing works, CUDA graphs capture, MTP works, smoke tests pass, and the measured C=1 median is **31.35 tok/s** with MTP k=3 plus sparse-only autotuning. NVFP4 support is experimental until its native FP4-MoE launch and quality gates complete.
+> **Status:** the patched FP8 TP=4 language path is validated on four GB10 nodes: all 62 shards load, NoPE sparse-MLA cache packing works, CUDA graphs capture, MTP works, smoke tests pass, and a clean restored launch measured **32.07 tok/s median C=1** with MTP k=3 plus sparse-only autotuning. NVFP4 is retained only as experimental research material: CUTLASS reached 17.42 tok/s but failed coherence, while B12x never completed its operational startup gate.
 
 ## Why quantized weights
 
@@ -33,7 +33,7 @@ The optional ModelOpt NVFP4-A16 checkpoint contains 120 shards totaling **194,66
 | max sequences | 4 |
 | batched tokens | 8,192 |
 | GPU memory utilization | 0.80 |
-| MTP draft tokens | 5 |
+| MTP draft tokens | 3 |
 
 The official vLLM recipe uses TP=4, FP8 KV, and MTP k=5. It requires vLLM 0.27.0+ integration and FlashInfer 0.6.17+ for NoPE sparse MLA. GB10 is Blackwell, but `sm_121a`/aarch64 is not the GB200 configuration used by the upstream example; treat kernel compatibility as a bring-up gate, not a paperwork exercise.
 
@@ -64,13 +64,13 @@ The upstream image supplies GLM-5.3, CUDA 13.0, and FlashInfer 0.6.17. The deriv
 Stage the checkpoint on every node, then start the head and workers using their fabric addresses and live RoCE-v2 GID indices:
 
 ```bash
-./scripts/glm53_node_up.sh head   10.0.0.46  10.0.0.46  3
-./scripts/glm53_node_up.sh worker 10.0.0.150 10.0.0.46  3
-./scripts/glm53_node_up.sh worker 10.0.0.13  10.0.0.46  6
-./scripts/glm53_node_up.sh worker 10.0.0.246 10.0.0.46  3
+./scripts/glm53_node_up.sh head   10.0.0.46  10.0.0.46  auto
+./scripts/glm53_node_up.sh worker 10.0.0.150 10.0.0.46  auto
+./scripts/glm53_node_up.sh worker 10.0.0.13  10.0.0.46  auto
+./scripts/glm53_node_up.sh worker 10.0.0.246 10.0.0.46  auto
 ```
 
-GID indices drift after network changes. Resolve them live; the values above are only the last known working TP=4 topology.
+GID indices drift after network changes. `auto` resolves the RoCE-v2 index matching each node's fabric IPv4 address at launch time; do not bake observed indexes into automation.
 
 On the head:
 
