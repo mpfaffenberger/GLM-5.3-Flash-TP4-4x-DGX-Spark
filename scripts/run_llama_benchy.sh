@@ -23,6 +23,16 @@ if [[ ! -f "$TOKENIZER/tokenizer_config.json" ]]; then
   exit 1
 fi
 
+# Force one HTTP connection per streamed request. The tested vLLM Rust
+# frontend otherwise leaks shared-memory broadcast blocks across keepalive
+# requests and wedges after the third request.
+for patch in \
+  patch_llama_benchy_keepalive.py \
+  patch_llama_benchy_stream_done.py
+do
+  uvx --from llama-benchy==0.4.0 python "$ROOT/patches/$patch"
+done
+
 command=(
   uvx --from llama-benchy==0.4.0 llama-benchy
   --base-url "$BASE_URL"
@@ -36,6 +46,10 @@ command=(
   # GLM defaults to reasoning; the harness's tiny "Paris" gate can consume
   # its whole budget in reasoning_content despite a healthy engine.
   --skip-coherence
+  # vLLM's Rust frontend can wedge its shared-memory output broadcaster when
+  # speculative decoding streams the optional token_ids extension. Usage
+  # completion_tokens remains the authoritative aggregate token count.
+  --extra-body return_token_ids=false
   --enable-prefix-caching
   --concurrency 1 2 5 10
   --save-result "$RESULT_FILE"

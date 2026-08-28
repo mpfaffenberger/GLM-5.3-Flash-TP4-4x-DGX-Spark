@@ -48,6 +48,7 @@ The official vLLM recipe uses TP=4, FP8 KV, and MTP k=5. It requires vLLM 0.27.0
 - `scripts/stage_nvfp4_from_246.sh` — pinned NVFP4 verify-and-fan-out pipeline
 - `scripts/fanout_cluster.sh` — this cluster's `.246 → head → workers` FP8 staging pipeline
 - `scripts/smoke_bench.py` — model, reasoning, tool-free smoke, and basic decode timing
+- `scripts/run_llama_benchy.sh` — full Spark Arena v2 depth/concurrency profile with the vLLM keepalive workaround
 - `scripts/verify_checkpoint.py` — verify revision, shard count, and index completeness
 
 ## Quick start

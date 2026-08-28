@@ -69,6 +69,20 @@ GB10 unified memory makes retained filesystem cache harmful during these large
 loads. Drop caches before a controlled relaunch; do not preserve tens of GiB of
 checkpoint page cache while allocating model weights.
 
+## `llama-benchy` wedges after three streamed requests
+
+The tested vLLM Rust frontend can retain shared-memory broadcast blocks when
+`llama-benchy` reuses one HTTP/1.1 connection. The engine then reports no active
+request while new completions hang and `shm_broadcast.py` reports no available
+block. `scripts/run_llama_benchy.sh` applies the narrow, idempotent
+`patch_llama_benchy_keepalive.py` compatibility patch to use one connection per
+streamed request. It also disables the optional `return_token_ids` extension;
+OpenAI usage metadata remains the authoritative aggregate token count.
+
+If the broadcaster is already wedged, stopping the client is insufficient.
+Stop the API, remove all four rank containers, reload `nvidia_uvm`, drop caches,
+re-form Ray, and relaunch from clean unified memory before benchmarking again.
+
 ## 1M context fails after 256K succeeds
 
 That is capacity tuning, not baseline failure. Record live KV-cache tokens, lower max sequences, and raise memory utilization cautiously. Test 512K before 1M after the SM121 kernel blocker is resolved. FP8 KV reduces cache cost but does not repeal arithmetic.

@@ -1,0 +1,11 @@
+# Production sparse-tuned runtime plus the SM121 indexer quant-block fix.
+# GLM-5.3 contexts beyond index_topk (2048) engage the real sparse indexer,
+# whose DeepGemm paged-MQA path requires FP8 block_kv=64 on SM120/SM121.
+ARG BASE_IMAGE=glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58
+FROM ${BASE_IMAGE}
+COPY patches/patch_glm53_sm121_indexer_quant_block.py /tmp/patch_indexer.py
+RUN python3 /tmp/patch_indexer.py \
+    && rm /tmp/patch_indexer.py \
+    && grep -q 'is_device_capability_family(120)' \
+       /usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/nvidia/attention.py
+LABEL ai.code-puppy.glm53-longctx="sm121-indexer-quant-block-64"
