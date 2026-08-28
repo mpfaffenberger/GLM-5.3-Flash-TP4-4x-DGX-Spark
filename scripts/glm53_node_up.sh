@@ -46,9 +46,17 @@ if [[ "$MTU" != 9000 ]]; then
   exit 1
 fi
 
+# Optional extra container env (space-separated KEY=VALUE pairs), e.g.
+# GLM53_DOCKER_ENV='CUDA_LAUNCH_BLOCKING=1' for synchronous-launch debugging.
+EXTRA_ENV_ARGS=()
+for kv in ${GLM53_DOCKER_ENV:-}; do
+  EXTRA_ENV_ARGS+=(-e "$kv")
+done
+
 docker rm -f "$NAME" >/dev/null 2>&1 || true
 docker run -d --name "$NAME" \
   --restart no --network host --ipc host --shm-size 64gb --gpus all \
+  "${EXTRA_ENV_ARGS[@]}" \
   --entrypoint /bin/bash \
   --device /dev/infiniband:/dev/infiniband \
   --ulimit memlock=-1 --ulimit nofile=1048576:1048576 \
