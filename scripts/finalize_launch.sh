@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 FANOUT_PID_FILE=${GLM53_FANOUT_PID_FILE:-$HOME/glm53-fanout.pid}
 LOG=${GLM53_FINALIZE_LOG:-$HOME/glm53-finalize.log}
-IMAGE=${GLM53_IMAGE:-glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58}
+IMAGE=${GLM53_IMAGE:-glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58}
 SSH="ssh -o BatchMode=yes"
 
 exec > >(tee -a "$LOG") 2>&1

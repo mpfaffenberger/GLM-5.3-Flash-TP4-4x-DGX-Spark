@@ -2,7 +2,7 @@ recipe_version: "2"
 name: GLM-5.3-Flash-FP8-TP4-MTP3
 model: unsloth/GLM-5.3-Flash-FP8
 # Validated SM121 NoPE runtime with sparse autotuning and dense-prefix top-k fix.
-container: glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58
+container: glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58
 runtime: vllm
 cluster_only: true
 solo_only: false
@@ -15,7 +15,7 @@ defaults:
   host: 0.0.0.0
   port: 8000
   tensor_parallel: 4
-  gpu_memory_utilization: 0.80
+  gpu_memory_utilization: 0.82
   max_model_len: 262144
   max_num_batched_tokens: 8192
   max_num_seqs: 4

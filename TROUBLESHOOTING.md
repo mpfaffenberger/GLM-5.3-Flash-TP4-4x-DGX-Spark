@@ -14,7 +14,7 @@ The checkpoint uses blockwise FP8 (`128×128`). Confirm the selected quantized M
 
 ## OOM during weight load
 
-The checkpoint is 305.79 GiB, roughly 76.45 GiB of files per TP rank before runtime overhead. Confirm TP=4 is formed before loading. Start with utilization 0.80 and 256K context. Do not try BF16. Check host memory consumers because GB10 uses unified memory.
+The checkpoint is 305.79 GiB, roughly 76.45 GiB of files per TP rank before runtime overhead. Confirm TP=4 is formed before loading. Use the validated 0.82 production utilization and 256K context; drop to 0.80 only while isolating startup headroom issues. Do not try BF16. Check host memory consumers because GB10 uses unified memory.
 
 ## NCCL silently stalls at first collective
 
@@ -102,9 +102,18 @@ The production fix is
 `triton_convert_req_index_to_global_index(..., return_valid_counts=True)` to
 compact valid indices to `[0, count)`, then pass those counts as `seq_lens`
 (the kernel's `topk_length`). Use image
-`glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58`. Validation passed 1024,
+`glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58`. Validation passed 1024,
 1900, 2100, 4096, and 8192-token probes, a 3200-token recall gate, and the 2K
-llama-benchy canary with no C=1 regression.
+llama-benchy canary with no C=1 regression. V2 also mirrors the generic
+backend's CUDA-graph padding guard: zero-length rows launch against one dummy
+slot with `topk_length=1`, then their ignored output is zeroed. Without that
+guard, the 16K-context concurrency-10 warmup can wedge the same kernel.
+
+At 100K context and concurrency 10, GMU 0.80 exposes only 1,024,452 KV tokens
+for roughly 1,020,480 requested tokens, leaving less headroom than block
+rounding and MTP bookkeeping require. The production GMU 0.82 profile exposes
+1,231,915 KV tokens. The exact 100K/c10 canary passed at 0.82, the API remained
+healthy, and post-stress C=1 measured 31.91 tok/s median.
 
 If an unpatched engine is already wedged, recovery still requires stopping the
 API, removing all four rank containers, reloading `nvidia_uvm`, dropping

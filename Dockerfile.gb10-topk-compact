@@ -1,6 +1,6 @@
-# Production sparse-tuned runtime plus the dense-prefix top-k table fix.
-# Contexts beyond GLM's index_topk (2048) otherwise hang FlashInfer's SM120
-# sparse-MLA kernel on GB10; see results/sm121-sparse-mla-hang-diagnosis/.
+# Production sparse-tuned runtime plus SM121 sparse-table safety fixes.
+# Compacts real top-k rows and substitutes CUDA-graph padding rows that would
+# otherwise launch FlashInfer's native NoPE kernel with topk_length=0.
 ARG BASE_IMAGE=glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58
 FROM ${BASE_IMAGE}
 COPY patches/patch_sm121_sparse_topk_compact.py /tmp/patch_compact.py
@@ -9,5 +9,7 @@ RUN python3 /tmp/patch_compact.py \
     && python3 -m py_compile \
        /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm120.py \
     && grep -q 'return_valid_counts=True' \
+       /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm120.py \
+    && grep -q 'kernel_topk_lengths' \
        /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/mla/flashinfer_mla_sparse_sm120.py
-LABEL ai.code-puppy.glm53-topk-compact="sm121-dense-prefix-topk"
+LABEL ai.code-puppy.glm53-topk-compact="sm121-dense-prefix-and-empty-row-v2"

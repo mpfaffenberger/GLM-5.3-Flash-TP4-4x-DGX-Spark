@@ -7,7 +7,7 @@ This is the validated FP8 deployment path. It copies the operational shape of th
 - Four GB10 nodes connected through the switched RoCE fabric; all fabric NICs must use MTU 9000.
 - Docker must expose `/dev/infiniband`, host networking, host IPC, memlock, and at least `nofile=1048576`.
 - Each node needs ~306 GiB for its local full Hugging Face snapshot plus healthy disk margin. Ray may evict workers when disks exceed 95%.
-- Use `glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58`. It layers the validated dense-prefix sparse-index fix over the sparse-tuned SM121 runtime. Without that final patch, the first real sparse request beyond `index_topk=2048` can permanently wedge FlashInfer's kernel.
+- Use `glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58`. It layers the validated dense-prefix sparse-index fix over the sparse-tuned SM121 runtime. Without that final patch, the first real sparse request beyond `index_topk=2048` can permanently wedge FlashInfer's kernel.
 - Do not substitute BF16. It cannot fit this four-node cluster.
 
 ## 1. Validate the runtime image before downloading 306 GiB four times
@@ -18,8 +18,8 @@ docker pull vllm/vllm-openai:glm53-flash
 # top-k compaction layer. Override BASE_IMAGE if your local base tag differs.
 docker build -f Dockerfile.gb10-topk-compact \
   --build-arg BASE_IMAGE=glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58 \
-  -t glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58 .
-export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58
+  -t glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58 .
+export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58
 docker run --rm --gpus all --entrypoint python3 "$GLM53_IMAGE" - <<'PY'
 import torch, vllm
 import flashinfer
@@ -109,7 +109,7 @@ The default launch uses:
 - MTP k=5
 - reasoning parser `glm45`
 - tool parser `glm47`
-- GPU memory utilization 0.80
+- GPU memory utilization 0.82
 
 If MTP is the first failing gate, retry with `GLM53_MTP_TOKENS=0`; the script omits speculative config when set to zero. This diagnoses MTP separately rather than deleting it from the recipe.
 

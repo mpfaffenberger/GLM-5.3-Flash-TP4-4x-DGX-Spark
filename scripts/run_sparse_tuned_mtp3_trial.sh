@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-IMAGE=${GLM53_IMAGE:-glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58}
+IMAGE=${GLM53_IMAGE:-glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58}
 MTP_TOKENS=${GLM53_TRIAL_MTP_TOKENS:-3}
 FLASHINFER_AUTOTUNE=${GLM53_TRIAL_FLASHINFER_AUTOTUNE:-1}
 DROP_CACHES=${GLM53_DROP_CACHES:-1}
