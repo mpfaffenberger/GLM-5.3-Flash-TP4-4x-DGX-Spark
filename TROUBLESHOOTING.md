@@ -83,28 +83,34 @@ If the broadcaster is already wedged, stopping the client is insufficient.
 Stop the API, remove all four rank containers, reload `nvidia_uvm`, drop caches,
 re-form Ray, and relaunch from clean unified memory before benchmarking again.
 
-## Requests beyond 2048 total tokens wedge the engine
+## Requests beyond 2048 total tokens wedge without top-k compaction
 
 GLM-5.3's sparse attention selects `index_topk = 2048` tokens. vLLM's kpool
-indexer port short-circuits contexts at or below 2048 (causal `arange`, no
-real selection), so every small benchmark passes while the first request past
-2048 hangs all four GPUs at ~96% utilization and ~20 W forever.
+indexer short-circuits contexts at or below 2048 (causal `arange`, no real
+selection), so small benchmarks can pass while the first request beyond 2048
+wedges all four GPUs at ~96% utilization and ~20 W.
 
-Synchronous-launch stack captures (see
-`results/sm121-sparse-mla-hang-diagnosis/`) show FlashInfer's SM120
-sparse-MLA paged attention (`trtllm_batch_decode_with_kv_cache_mla`, DSv3.2
-path) never terminating on one rank once it consumes a fully populated top-k
-index table, while the remaining ranks wait in the post-attention
-`ncclAllReduce`. Until that kernel is fixed upstream (or the sliced 2176→2048
-index table is proven in-spec), treat this recipe as validated for **contexts
-under 2048 tokens only**, and do not run long-context benchmarks against it.
-Recovery requires killing the API server, removing all four rank containers,
-reloading `nvidia_uvm`, dropping caches, and relaunching.
+Synchronous-launch captures in
+`results/sm121-sparse-mla-hang-diagnosis/` proved that one rank never returns
+from FlashInfer's SM120 sparse-MLA paged attention while the other ranks wait
+in the post-attention `ncclAllReduce`. The remapped kpool table contained
+interspersed `-1` slots, but the kernel requires a dense valid prefix with an
+explicit length.
 
-For kernel debugging, `GLM53_DOCKER_ENV='CUDA_LAUNCH_BLOCKING=1'` on
-`glm53_node_up.sh` makes every launch synchronous so `py-spy dump` (run with
-sudo from the host against the `ray::RayWorkerProc` PID) names the exact
-stuck kernel instead of a downstream launch-queue victim.
+The production fix is
+`patches/patch_sm121_sparse_topk_compact.py`: call
+`triton_convert_req_index_to_global_index(..., return_valid_counts=True)` to
+compact valid indices to `[0, count)`, then pass those counts as `seq_lens`
+(the kernel's `topk_length`). Use image
+`glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58`. Validation passed 1024,
+1900, 2100, 4096, and 8192-token probes, a 3200-token recall gate, and the 2K
+llama-benchy canary with no C=1 regression.
+
+If an unpatched engine is already wedged, recovery still requires stopping the
+API, removing all four rank containers, reloading `nvidia_uvm`, dropping
+caches, and relaunching. For kernel debugging,
+`GLM53_DOCKER_ENV='CUDA_LAUNCH_BLOCKING=1'` makes every launch synchronous so
+host-side `sudo py-spy dump` identifies the actual stuck kernel.
 
 ## 1M context fails after 256K succeeds
 

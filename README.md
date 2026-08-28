@@ -4,7 +4,7 @@ Serve GLM-5.3-Flash across four NVIDIA DGX Sparks (GB10, `sm_121a`) over dedicat
 
 > **Status:** the patched FP8 TP=4 language path is validated on four GB10 nodes: all 62 shards load, NoPE sparse-MLA cache packing works, CUDA graphs capture, MTP works, smoke tests pass, and a clean restored launch measured **32.07 tok/s median C=1** with MTP k=3 plus sparse-only autotuning. NVFP4 is retained only as experimental research material: CUTLASS reached 17.42 tok/s but failed coherence, while B12x never completed its operational startup gate.
 >
-> **Known limitation:** contexts beyond GLM's `index_topk = 2048` engage FlashInfer's SM120 sparse-MLA kernel, which currently never terminates on GB10 — the engine wedges on the first such request. The validated envelope is therefore **short-context serving (< 2048 total tokens)** until the kernel is fixed. Full stack-capture evidence lives in [`results/sm121-sparse-mla-hang-diagnosis/`](results/sm121-sparse-mla-hang-diagnosis/).
+> **SM121 long-context fix:** real sparse selection begins beyond GLM's `index_topk = 2048`. FlashInfer's SM120 sparse-MLA kernel wedges on in-place tables containing interspersed `-1` entries. The production image compacts valid entries to a dense prefix and passes an explicit per-token `topk_length`. Validation passed at 1K, 1.9K, 2.1K, 4K, and 8K prompt lengths, plus a 3.2K long-context recall gate. Root-cause stack evidence remains in [`results/sm121-sparse-mla-hang-diagnosis/`](results/sm121-sparse-mla-hang-diagnosis/).
 
 ## Why quantized weights
 
@@ -59,7 +59,11 @@ Build the small GB10 multi-node derivative of upstream's dedicated arm64 image:
 
 ```bash
 docker pull vllm/vllm-openai:glm53-flash
-docker build -f Dockerfile.gb10-nope -t glm53-vllm-gb10:nope-sm121-ray-2.58 .
+# Build the NoPE/Ray base and sparse-tuned runtime as described in RECIPE.md,
+# then add the production dense-prefix top-k fix:
+docker build -f Dockerfile.gb10-topk-compact \
+  -t glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58 .
+export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58
 ```
 
 The upstream image supplies GLM-5.3, CUDA 13.0, and FlashInfer 0.6.17. The derivative only adds Ray 2.58.0 because upstream's published image targets single-node deployments.

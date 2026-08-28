@@ -7,15 +7,19 @@ This is the validated FP8 deployment path. It copies the operational shape of th
 - Four GB10 nodes connected through the switched RoCE fabric; all fabric NICs must use MTU 9000.
 - Docker must expose `/dev/infiniband`, host networking, host IPC, memlock, and at least `nofile=1048576`.
 - Each node needs ~306 GiB for its local full Hugging Face snapshot plus healthy disk margin. Ray may evict workers when disks exceed 95%.
-- Use `glm53-vllm-gb10:nope-sm121-ray-2.58`, built from upstream's dedicated multi-arch `vllm/vllm-openai:glm53-flash` image. It contains GLM-5.3, CUDA 13.0, and FlashInfer 0.6.17; the derivative adds Ray 2.58.0 plus the tested SM121 NoPE fixed-ABI compatibility patch.
+- Use `glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58`. It layers the validated dense-prefix sparse-index fix over the sparse-tuned SM121 runtime. Without that final patch, the first real sparse request beyond `index_topk=2048` can permanently wedge FlashInfer's kernel.
 - Do not substitute BF16. It cannot fit this four-node cluster.
 
 ## 1. Validate the runtime image before downloading 306 GiB four times
 
 ```bash
 docker pull vllm/vllm-openai:glm53-flash
-docker build -f Dockerfile.gb10-nope -t glm53-vllm-gb10:nope-sm121-ray-2.58 .
-export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-ray-2.58
+# Build/stage the validated sparse-tuned base first, then add the production
+# top-k compaction layer. Override BASE_IMAGE if your local base tag differs.
+docker build -f Dockerfile.gb10-topk-compact \
+  --build-arg BASE_IMAGE=glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58 \
+  -t glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58 .
+export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58
 docker run --rm --gpus all --entrypoint python3 "$GLM53_IMAGE" - <<'PY'
 import torch, vllm
 import flashinfer
@@ -73,10 +77,10 @@ All `enp1s0f1np1` fabric links must report MTU 9000. Select each node's RoCE-v2 
 Run head first, then workers:
 
 ```bash
-./scripts/glm53_node_up.sh head   10.0.0.46  10.0.0.46  3
-./scripts/glm53_node_up.sh worker 10.0.0.150 10.0.0.46  3
-./scripts/glm53_node_up.sh worker 10.0.0.13  10.0.0.46  6
-./scripts/glm53_node_up.sh worker 10.0.0.246 10.0.0.46  3
+./scripts/glm53_node_up.sh head   10.0.0.46  10.0.0.46  auto
+./scripts/glm53_node_up.sh worker 10.0.0.150 10.0.0.46  auto
+./scripts/glm53_node_up.sh worker 10.0.0.13  10.0.0.46  auto
+./scripts/glm53_node_up.sh worker 10.0.0.246 10.0.0.46  auto
 ```
 
 On the head:
@@ -85,7 +89,7 @@ On the head:
 docker exec glm53-tp4 ray status
 ```
 
-Require four GPUs before launching the engine.
+Require four GPUs before launching the engine. GID indices drift across reboots; `auto` resolves the RoCE-v2 GID matching each node's fabric IPv4 address and is the production setting.
 
 ## 5. First serve
 

@@ -1,8 +1,8 @@
 recipe_version: "2"
 name: GLM-5.3-Flash-FP8-TP4-MTP3
 model: unsloth/GLM-5.3-Flash-FP8
-# Built from upstream's dedicated arm64 GLM-5.3 image plus Ray for multi-node TP.
-container: glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58
+# Validated SM121 NoPE runtime with sparse autotuning and dense-prefix top-k fix.
+container: glm53-vllm-gb10:nope-sm121-topk-compact-ray-2.58
 runtime: vllm
 cluster_only: true
 solo_only: false
@@ -50,6 +50,7 @@ command: |
     --reasoning-parser glm45 \
     --tool-call-parser glm47 \
     --enable-auto-tool-choice \
+    --enable-flashinfer-autotune \
     --speculative-config '{{"method":"mtp","num_speculative_tokens":{num_speculative_tokens}}}'
 
 metadata:
@@ -66,7 +67,10 @@ metadata:
     rejects GLM-5.3 NoPE (pe_dim=0). This recipe's tested fixed-ABI patch keeps
     FlashInfer's 656-byte cache layout, zero-fills its RoPE region, pads NoPE
     queries only at the backend boundary, and adapts the sparse index width.
-    TP=4 weight load, CUDA graph capture, MTP, smoke tests, and C=1 decode are
-    validated. Multimodal serving remains outside the validated profile.
+    The production top-k patch compacts valid sparse indices to a dense prefix
+    and passes exact per-token lengths, preventing the SM120 kernel wedge above
+    index_topk=2048. TP=4 weight load, CUDA graph capture, MTP, probes through
+    8192 tokens, long-context recall, and C=1 decode are validated. Multimodal
+    serving remains outside the validated profile.
 executor_config:
   user: root
