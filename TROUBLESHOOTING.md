@@ -83,6 +83,29 @@ If the broadcaster is already wedged, stopping the client is insufficient.
 Stop the API, remove all four rank containers, reload `nvidia_uvm`, drop caches,
 re-form Ray, and relaunch from clean unified memory before benchmarking again.
 
+## Requests beyond 2048 total tokens wedge the engine
+
+GLM-5.3's sparse attention selects `index_topk = 2048` tokens. vLLM's kpool
+indexer port short-circuits contexts at or below 2048 (causal `arange`, no
+real selection), so every small benchmark passes while the first request past
+2048 hangs all four GPUs at ~96% utilization and ~20 W forever.
+
+Synchronous-launch stack captures (see
+`results/sm121-sparse-mla-hang-diagnosis/`) show FlashInfer's SM120
+sparse-MLA paged attention (`trtllm_batch_decode_with_kv_cache_mla`, DSv3.2
+path) never terminating on one rank once it consumes a fully populated top-k
+index table, while the remaining ranks wait in the post-attention
+`ncclAllReduce`. Until that kernel is fixed upstream (or the sliced 2176→2048
+index table is proven in-spec), treat this recipe as validated for **contexts
+under 2048 tokens only**, and do not run long-context benchmarks against it.
+Recovery requires killing the API server, removing all four rank containers,
+reloading `nvidia_uvm`, dropping caches, and relaunching.
+
+For kernel debugging, `GLM53_DOCKER_ENV='CUDA_LAUNCH_BLOCKING=1'` on
+`glm53_node_up.sh` makes every launch synchronous so `py-spy dump` (run with
+sudo from the host against the `ray::RayWorkerProc` PID) names the exact
+stuck kernel instead of a downstream launch-queue victim.
+
 ## 1M context fails after 256K succeeds
 
 That is capacity tuning, not baseline failure. Record live KV-cache tokens, lower max sequences, and raise memory utilization cautiously. Test 512K before 1M after the SM121 kernel blocker is resolved. FP8 KV reduces cache cost but does not repeal arithmetic.

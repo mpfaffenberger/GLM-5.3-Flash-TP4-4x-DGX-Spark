@@ -3,6 +3,8 @@
 Serve GLM-5.3-Flash across four NVIDIA DGX Sparks (GB10, `sm_121a`) over dedicated RoCE. The validated baseline uses [`unsloth/GLM-5.3-Flash-FP8`](https://huggingface.co/unsloth/GLM-5.3-Flash-FP8); the recipe also includes staging and launch support for [`LibertAIDAI/GLM-5.3-Flash-NVFP4`](https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4).
 
 > **Status:** the patched FP8 TP=4 language path is validated on four GB10 nodes: all 62 shards load, NoPE sparse-MLA cache packing works, CUDA graphs capture, MTP works, smoke tests pass, and a clean restored launch measured **32.07 tok/s median C=1** with MTP k=3 plus sparse-only autotuning. NVFP4 is retained only as experimental research material: CUTLASS reached 17.42 tok/s but failed coherence, while B12x never completed its operational startup gate.
+>
+> **Known limitation:** contexts beyond GLM's `index_topk = 2048` engage FlashInfer's SM120 sparse-MLA kernel, which currently never terminates on GB10 — the engine wedges on the first such request. The validated envelope is therefore **short-context serving (< 2048 total tokens)** until the kernel is fixed. Full stack-capture evidence lives in [`results/sm121-sparse-mla-hang-diagnosis/`](results/sm121-sparse-mla-hang-diagnosis/).
 
 ## Why quantized weights
 
