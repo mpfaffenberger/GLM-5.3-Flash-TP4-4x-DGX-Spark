@@ -19,6 +19,15 @@ BATCHED_TOKENS=${GLM53_MAX_BATCHED_TOKENS:-8192}
 KV_CACHE_DTYPE=${GLM53_KV_CACHE_DTYPE:-fp8}
 MTP_TOKENS=${GLM53_MTP_TOKENS:-3}
 FLASHINFER_AUTOTUNE=${GLM53_FLASHINFER_AUTOTUNE:-1}
+# GLM53_ENFORCE_EAGER=1 drops CUDA graph capture/replay on every rank. It is
+# both the control experiment for the cross-rank MoE divergence and a candidate
+# production profile, so pin the env var rather than trusting vLLM's
+# auto-enable heuristic for breakable graphs.
+ENFORCE_EAGER=${GLM53_ENFORCE_EAGER:-0}
+DOCKER_ENV=${GLM53_DOCKER_ENV:-}
+if [[ "$ENFORCE_EAGER" == 1 ]]; then
+  DOCKER_ENV="$DOCKER_ENV VLLM_USE_BREAKABLE_CUDAGRAPH=0"
+fi
 ACTION=${1:-start}
 
 stop_cluster() {
@@ -39,13 +48,13 @@ fi
 # Container setup retains the validated per-node RoCE GID discovery but skips Ray.
 stop_cluster
 GLM53_START_RAY=0 GLM53_IMAGE="$IMAGE" \
-  GLM53_DOCKER_ENV="${GLM53_DOCKER_ENV:-}" \
+  GLM53_DOCKER_ENV="$DOCKER_ENV" \
   "$ROOT/scripts/glm53_node_up.sh" head "$HEAD" "$HEAD" auto
 for i in "${!WORKERS[@]}"; do
   ip=${WORKERS[$i]}
   scp -q "$ROOT/scripts/glm53_node_up.sh" "$ip:~/glm53_node_up.sh"
   ssh -o BatchMode=yes "$ip" \
-    "GLM53_START_RAY=0 GLM53_IMAGE='$IMAGE' GLM53_DOCKER_ENV='${GLM53_DOCKER_ENV:-}' ~/glm53_node_up.sh worker '$ip' '$HEAD' auto" &
+    "GLM53_START_RAY=0 GLM53_IMAGE='$IMAGE' GLM53_DOCKER_ENV='$DOCKER_ENV' ~/glm53_node_up.sh worker '$ip' '$HEAD' auto" &
 done
 wait
 
@@ -55,6 +64,8 @@ SPEC_ARGS=()
 if (( MTP_TOKENS > 0 )); then
   SPEC_ARGS=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_TOKENS}")
 fi
+EAGER_ARGS=()
+[[ "$ENFORCE_EAGER" == 1 ]] && EAGER_ARGS=(--enforce-eager)
 
 base_cmd=(
   vllm serve "$MODEL"
@@ -75,6 +86,7 @@ base_cmd=(
   --enable-auto-tool-choice
   "$AUTOTUNE_ARG"
   "${SPEC_ARGS[@]}"
+  "${EAGER_ARGS[@]}"
 )
 
 quote_cmd() {
