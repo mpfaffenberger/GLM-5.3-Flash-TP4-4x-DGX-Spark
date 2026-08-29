@@ -121,11 +121,64 @@ rounding and MTP bookkeeping require. The production GMU 0.82 profile exposes
 1,231,915 KV tokens. The exact 100K/c10 canary passed at 0.82, the API remained
 healthy, and post-stress C=1 measured 31.91 tok/s median.
 
-If an unpatched engine is already wedged, recovery still requires stopping the
-API, removing all four rank containers, reloading `nvidia_uvm`, dropping
-caches, and relaunching. For kernel debugging,
+A wedged compute engine survives container removal: after `docker rm -f` the
+GPU still reports ~96% utilisation at ~20 W with nothing running, and every
+fresh vLLM process inherits a dead device. Clearing it without a reboot
+requires the *full* module stack, not just `nvidia_uvm`:
+
+```bash
+./scripts/glm53_gpu_reset.sh 10.0.0.46 "10.0.0.13 10.0.0.150 10.0.0.246"
+```
+
+That stops `nvidia-persistenced`, removes `nvidia_drm`, `nvidia_modeset`,
+`nvidia_uvm`, and `nvidia`, reloads them in dependency order, and verifies that
+utilisation actually returned to ~0%. For kernel debugging,
 `GLM53_DOCKER_ENV='CUDA_LAUNCH_BLOCKING=1'` makes every launch synchronous so
 host-side `sudo py-spy dump` identifies the actual stuck kernel.
+
+## Long sequential load wedges inside MoE shared experts
+
+A fresh engine serves 32K at concurrency 10 without trouble, but a long
+sequential suite can wedge partway through. The first strict native full-suite
+run stopped progressing at **32K context, concurrency 5, run 1**, and was
+rejected as invalid (`64/104` valid rows; the remaining 306 request ends were
+transport failures *after* the engine had already died).
+
+Stacks captured from all four live ranks at the wedge show **rank divergence
+inside a single MoE layer** — not a uniformly stuck kernel:
+
+| Rank | Innermost frame |
+|---|---|
+| TP0 | `moe_runner._forward_impl` → `GateLinear.forward` (router) |
+| TP1 | `_maybe_apply_shared_experts` → `input_quant_fp8.forward_cuda` |
+| TP2 | same as TP1 |
+| TP3 | same as TP1 |
+
+One rank is still at the router while three have advanced into the shared
+experts, then the step never returns. The engine logs
+`No available shared memory broadcast block found in 60 seconds` once per
+minute for the full RPC window and finally aborts with
+`TimeoutError: RPC call to sample_tokens timed out`. GPUs sit at ~96% util and
+~20 W the entire time: a spinning kernel, not real work.
+
+The scheduler state at the wedge was `Running: 4, Waiting: 1` — a long prefill
+being admitted **on top of requests that were already decoding**. That also
+explains the confusing canary results: a standalone 32K×c10 burst admits every
+request at once, so each step is uniform and that mixed prefill/decode
+transition never happens, while a c5 ladder trickles admissions and hits it.
+
+Reproduce the state directly instead of replaying ~50 minutes of suite shapes:
+
+```bash
+python3 scripts/repro_moe_wedge.py --decoding 4 --stagger 1 --iterations 4
+```
+
+It fires N long requests, waits for each to emit its first token, then admits
+one more long prefill into the live batch. Exit `42` means the wedge recurred;
+the script captures all four rank stacks and per-node power draw first. Use
+`--ramp-depths 8192,16384` to mimic the suite precursor cheaply. **No fix has
+been validated yet**; this is an open defect against the native TP=4 profile,
+and the full Spark Arena matrix is not yet green.
 
 ## 1M context fails after 256K succeeds
 

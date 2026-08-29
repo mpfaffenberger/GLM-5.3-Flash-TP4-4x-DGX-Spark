@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start one GLM-5.3 TP=4 container and start/join Ray.
+# Start one GLM-5.3 TP=4 container; optionally start/join legacy Ray.
 # Usage: glm53_node_up.sh <head|worker> <self_fabric_ip> <head_fabric_ip> <gid_index|auto>
 set -euo pipefail
 
@@ -22,6 +22,7 @@ MTU_IFACE=${GLM53_MTU_IFACE:-enp1s0f1np1}
 # GB10 GPU allocations consume unified host memory. Ray's default 95% monitor
 # otherwise kills a healthy TP rank; retain a conservative 3% emergency margin.
 RAY_MEMORY_USAGE_THRESHOLD=${GLM53_RAY_MEMORY_USAGE_THRESHOLD:-0.97}
+START_RAY=${GLM53_START_RAY:-1}
 
 if [[ "$GID" == auto ]]; then
   GID=$(show_gids | awk -v ip="$SELF_IP" '
@@ -96,12 +97,14 @@ print("capability", torch.cuda.get_device_capability())
 print("vllm", vllm.__version__)
 PY'
 
-if [[ "$ROLE" == head ]]; then
-  docker exec "$NAME" ray start --head --node-ip-address "$SELF_IP" --port 6379 \
-    --num-gpus 1 --disable-usage-stats
-else
-  docker exec "$NAME" ray start --address "$HEAD_IP:6379" \
-    --node-ip-address "$SELF_IP" --num-gpus 1 --disable-usage-stats
+if [[ "$START_RAY" == 1 ]]; then
+  if [[ "$ROLE" == head ]]; then
+    docker exec "$NAME" ray start --head --node-ip-address "$SELF_IP" --port 6379 \
+      --num-gpus 1 --disable-usage-stats
+  else
+    docker exec "$NAME" ray start --address "$HEAD_IP:6379" \
+      --node-ip-address "$SELF_IP" --num-gpus 1 --disable-usage-stats
+  fi
 fi
 
-echo "=== NODE $SELF_IP ($ROLE) UP ==="
+echo "=== NODE $SELF_IP ($ROLE) UP start_ray=$START_RAY ==="

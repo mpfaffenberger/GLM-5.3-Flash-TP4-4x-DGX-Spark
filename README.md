@@ -5,6 +5,10 @@ Serve GLM-5.3-Flash across four NVIDIA DGX Sparks (GB10, `sm_121a`) over dedicat
 > **Status:** the patched FP8 TP=4 language path is validated on four GB10 nodes: all 62 shards load, NoPE sparse-MLA cache packing works, CUDA graphs capture, MTP works, smoke tests pass, and a clean restored launch measured **32.07 tok/s median C=1** with MTP k=3 plus sparse-only autotuning. NVFP4 is retained only as experimental research material: CUTLASS reached 17.42 tok/s but failed coherence, while B12x never completed its operational startup gate.
 >
 > **SM121 long-context fixes:** real sparse selection begins beyond GLM's `index_topk = 2048`. The production V2 image compacts valid entries to a dense prefix, passes explicit per-token `topk_length`, and safely substitutes CUDA-graph padding rows that would otherwise launch with length zero. Validation passed the original boundary probes, 16K/32K/65K at concurrency 10, and the exact 100K×c10 cache-capacity canary at GMU 0.82. Root-cause stack evidence remains in [`results/sm121-sparse-mla-hang-diagnosis/`](results/sm121-sparse-mla-hang-diagnosis/).
+>
+> **Multi-node topology:** the active launch path is native vLLM `mp` with `--nnodes 4`, rank 0 serving the OpenAI API and ranks 1–3 running headless over PyTorch distributed/NCCL. No Ray process runs in this topology; Ray support remains only as legacy fallback. The current image tag still contains `ray-2.58` because it was cut before the topology change.
+>
+> **Open defect (not yet green):** neither Ray nor native `mp` completes the full 104-row Spark Arena matrix. Ray wedged at repeated 32K×c10; native `mp` reaches 100K but wedges earlier at 32K×c5. Live four-rank stacks show TP0 still in the MoE router while TP1–TP3 have advanced into shared-expert FP8 input-quant, followed by shared-memory broadcast starvation and `RPC call to sample_tokens timed out`. Standalone 32K×c10 passes, so this is a sequence/mixed-batch-dependent defect rather than a broken kernel path. See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) and `scripts/repro_moe_wedge.py`. No runtime image has been published until a clean 104/104 run exists.
 
 ## Why quantized weights
 
@@ -44,8 +48,12 @@ The official vLLM recipe uses TP=4, FP8 KV, and MTP k=5. It requires vLLM 0.27.0
 - [`RECIPE.md`](RECIPE.md) — staged deployment procedure
 - [`recipe.yaml`](recipe.yaml) — machine-readable serve recipe
 - [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — expected GB10 failure gates
-- `scripts/glm53_node_up.sh` — start a rank container and form the Ray cluster
+- `scripts/glm53_node_up.sh` — start a rank container with validated RoCE setup
+- `scripts/glm53_native_launch.sh` — **no-Ray** TP=4 launch: rank 0 serves the
+  API, ranks 1–3 run `--headless` over PyTorch distributed rendezvous
 - `scripts/glm53_serve.sh` — launch vLLM on the head
+- `scripts/glm53_gpu_reset.sh` — clear a wedged GB10 compute engine without rebooting
+- `scripts/repro_moe_wedge.py` — fast targeted reproducer for the MoE rank-divergence wedge
 - `scripts/stage_model.sh` — FP8 checkpoint fan-out
 - `scripts/stage_nvfp4_from_246.sh` — pinned NVFP4 verify-and-fan-out pipeline
 - `scripts/fanout_cluster.sh` — this cluster's `.246 → head → workers` FP8 staging pipeline

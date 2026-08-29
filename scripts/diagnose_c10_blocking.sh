@@ -14,12 +14,17 @@ mark() { echo "$(date -u +%FT%TZ) $1" | tee -a "$LOG"; }
 cleanup() {
   tmux kill-session -t glm53serve 2>/dev/null || true
   docker rm -f glm53-tp4 >/dev/null 2>&1 || true
-  sudo -n modprobe -r nvidia_uvm 2>/dev/null || true
+  sudo -n systemctl stop nvidia-persistenced.service 2>/dev/null || true
+  sudo -n modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia
+  sudo -n modprobe nvidia
   sudo -n modprobe nvidia_uvm
+  sudo -n modprobe nvidia_modeset
+  sudo -n modprobe nvidia_drm
+  sudo -n systemctl start nvidia-persistenced.service
   sudo -n sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'
   for ip in $WORKERS; do
     ssh -o BatchMode=yes mpfaffenberger@$ip \
-      'docker rm -f glm53-tp4 >/dev/null 2>&1 || true; sudo -n modprobe -r nvidia_uvm 2>/dev/null || true; sudo -n modprobe nvidia_uvm; sudo -n sh -c "sync; echo 3 > /proc/sys/vm/drop_caches"' &
+      'docker rm -f glm53-tp4 >/dev/null 2>&1 || true; sudo -n systemctl stop nvidia-persistenced.service 2>/dev/null || true; sudo -n modprobe -r nvidia_drm nvidia_modeset nvidia_uvm nvidia; sudo -n modprobe nvidia; sudo -n modprobe nvidia_uvm; sudo -n modprobe nvidia_modeset; sudo -n modprobe nvidia_drm; sudo -n systemctl start nvidia-persistenced.service; sudo -n sh -c "sync; echo 3 > /proc/sys/vm/drop_caches"' &
   done
   wait
 }
