@@ -1,0 +1,15 @@
+# Remove the KDA prefill path's in-forward GPU->CPU synchronization.
+ARG BASE_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58
+FROM ${BASE_IMAGE}
+
+COPY patches/patch_glm53_kda_chunk_indices.py /tmp/patch_kda.py
+COPY patches/test_glm53_kda_chunk_indices.py /tmp/test_kda.py
+
+RUN python3 /tmp/patch_kda.py \
+    && python3 -m py_compile \
+       /usr/local/lib/python3.12/dist-packages/vllm/third_party/flash_linear_attention/ops/kda.py \
+       /usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/nvidia/kda.py \
+    && python3 /tmp/test_kda.py \
+    && rm /tmp/patch_kda.py /tmp/test_kda.py
+
+LABEL ai.code-puppy.glm53-kda-chunk-indices="host-metadata-no-d2h-v1"

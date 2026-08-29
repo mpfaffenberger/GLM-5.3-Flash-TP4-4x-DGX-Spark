@@ -24,7 +24,7 @@ say() { printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$LOG"; }
 
 cd "$ROOT"
 
-say "ISO_START depths=[$DEPTHS] concurrency=[$CONCURRENCIES] runs=$RUNS result=$RESULT"
+say "ISO_START depths=[$DEPTHS] concurrency=[$CONCURRENCIES] runs=$RUNS image=${GLM53_IMAGE:-launcher-default} result=$RESULT"
 
 # SKIP_PRELUDE=1 probes an already-running engine instead of recovering and
 # relaunching, so a healthy ~20 minute cold start is not thrown away.
