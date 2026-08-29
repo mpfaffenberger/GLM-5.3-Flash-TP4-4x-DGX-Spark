@@ -39,6 +39,11 @@ _lock = threading.Lock()
 _state = {"last_event": time.monotonic(), "active": 0, "stalled": False}
 
 
+def get(url: str, timeout: float = 10.0) -> dict:
+    with urllib.request.urlopen(url, timeout=timeout) as resp:
+        return json.load(resp)
+
+
 def post(url: str, payload: dict, timeout: float = 60.0) -> dict:
     req = urllib.request.Request(
         url,
@@ -54,22 +59,43 @@ def note_event() -> None:
         _state["last_event"] = time.monotonic()
 
 
-def calibrate(base: str, model: str, target: int) -> str:
-    """Return a prompt text whose token length is within 2% of ``target``."""
-    probe = FILLER * 64
-    count = post(f"{base}/tokenize", {"model": model, "prompt": probe})["count"]
-    per_unit = count / 64
-    repeats = max(1, math.ceil(target / per_unit))
-    prompt = FILLER * repeats
-    for _ in range(6):
-        actual = post(f"{base}/tokenize", {"model": model, "prompt": prompt})["count"]
-        ratio = target / actual
-        if abs(ratio - 1.0) <= 0.02:
-            return prompt
-        repeats = max(1, int(repeats * ratio))
+def measure_prompt_tokens(base: str, model: str, text: str) -> int:
+    """Server-side prompt length, chat template included.
+
+    `/v1/tokenize` is not served by this vLLM build, and a raw tokenizer would
+    ignore template overhead, so measure through the real completion path with
+    max_tokens=1: this is exactly the token count that lands in the KV cache.
+    """
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": text}],
+        "max_tokens": 1,
+        "temperature": 0,
+        "stream": False,
+    }
+    return post(f"{base}/chat/completions", body, timeout=600)["usage"]["prompt_tokens"]
+
+
+_calibrated: dict[int, tuple[str, int]] = {}
+
+
+def calibrate(base: str, model: str, target: int) -> tuple[str, int]:
+    """Return (prompt_text, measured_tokens) within 2% of ``target``."""
+    if target in _calibrated:
+        return _calibrated[target]
+    overhead = measure_prompt_tokens(base, model, "x")
+    unit = measure_prompt_tokens(base, model, FILLER * 16)
+    per_unit = max(1.0, (unit - overhead) / 16)
+    repeats = max(1, math.ceil((target - overhead) / per_unit))
+    prompt, actual = FILLER * repeats, overhead
+    for _ in range(4):
+        actual = measure_prompt_tokens(base, model, prompt)
+        if abs(actual - target) <= 0.02 * target:
+            break
+        repeats = max(1, int(repeats * (target - overhead) / (actual - overhead)))
         prompt = FILLER * repeats
-    print(f"WARN prompt calibrated to {actual} tokens for target {target}")
-    return prompt
+    _calibrated[target] = (prompt, actual)
+    return _calibrated[target]
 
 
 def stream_chat(base: str, model: str, prompt: str, max_new: int, tag: str,
@@ -162,6 +188,12 @@ def main() -> int:
                     help="requests already decoding before the extra prefill")
     ap.add_argument("--stagger", type=int, default=1,
                     help="long prefills admitted while the above decode")
+    ap.add_argument("--wave", type=int, default=0,
+                    help="fire this many identical long-prefix requests at once "
+                         "(no stagger) to mirror the pp2048@32K c5 shape")
+    ap.add_argument("--append-tokens", type=int, default=2048,
+                    help="extra tokens on the mid-decode request, matching the "
+                         "32768+2048 shape seen in the wedge dump")
     ap.add_argument("--max-new", type=int, default=512)
     ap.add_argument("--iterations", type=int, default=1)
     ap.add_argument("--ramp-depths", default="",
@@ -174,13 +206,14 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        post(f"{args.base_url}/models", {})
+        get(f"{args.base_url}/models")
     except Exception as exc:  # noqa: BLE001 - report any handshake failure
         print(f"API unreachable at {args.base_url}: {exc}")
         return 2
 
     print(f"calibrating prompt at {args.target_tokens} tokens ...", flush=True)
-    prompt = calibrate(args.base_url, args.model, args.target_tokens)
+    _, measured = calibrate(args.base_url, args.model, args.target_tokens)
+    print(f"calibrated to {measured} tokens (chat template included)", flush=True)
 
     def watchdog() -> None:
         while not _state["stalled"]:
@@ -198,8 +231,15 @@ def main() -> int:
     threading.Thread(target=watchdog, daemon=True).start()
 
     def round_at(depth_tokens: int, label: str, stagger: int) -> bool:
-        text = prompt if depth_tokens == args.target_tokens else calibrate(
-            args.base_url, args.model, depth_tokens)
+        text, actual = calibrate(args.base_url, args.model, depth_tokens)
+        # The real wedge step carried prompt_token_ids_len=34816 (32768+2048):
+        # a prefix-cached long context whose small incremental chunk lands on
+        # a live decode batch. FILLER repeats are prefix-compatible by
+        # construction, so the longer prompt reuses the shorter one's blocks.
+        late_text, late_tokens = calibrate(
+            args.base_url, args.model, depth_tokens + args.append_tokens)
+        print(f"  {label} prompt_tokens={actual} late_prompt_tokens={late_tokens}",
+              flush=True)
         readers = [threading.Event() for _ in range(args.decoding)]
         threads = [
             threading.Thread(
@@ -221,7 +261,7 @@ def main() -> int:
         late = [
             threading.Thread(
                 target=stream_chat,
-                args=(args.base_url, args.model, text, args.max_new,
+                args=(args.base_url, args.model, late_text, args.max_new,
                       f"{label}+stagger{j}", threading.Event()),
             )
             for j in range(stagger)
@@ -239,11 +279,33 @@ def main() -> int:
         if not round_at(depth, f"ramp{depth}", stagger=0):
             return 42
 
+    def wave_round(depth_tokens: int, label: str) -> bool:
+        text, actual = calibrate(
+            args.base_url, args.model, depth_tokens + args.append_tokens)
+        print(f"  {label} wave={args.wave} prompt_tokens={actual}", flush=True)
+        threads = [
+            threading.Thread(
+                target=stream_chat,
+                args=(args.base_url, args.model, text, args.max_new,
+                      f"{label}~{i}", threading.Event()),
+            )
+            for i in range(args.wave)
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=900)
+        return not _state["stalled"]
+
     for it in range(1, args.iterations + 1):
         stamp = time.strftime("%H:%M:%S", time.gmtime())
-        print(f"[{stamp}] iter {it}/{args.iterations} depth={args.target_tokens} "
-              f"decoding={args.decoding} +{args.stagger} admitted mid-decode", flush=True)
-        if not round_at(args.target_tokens, f"i{it}", stagger=args.stagger):
+        mode = (f"wave={args.wave}" if args.wave else
+                f"decoding={args.decoding} +{args.stagger} admitted mid-decode")
+        print(f"[{stamp}] iter {it}/{args.iterations} depth={args.target_tokens} {mode}",
+              flush=True)
+        ok = (wave_round(args.target_tokens, f"i{it}") if args.wave else
+              round_at(args.target_tokens, f"i{it}", stagger=args.stagger))
+        if not ok:
             print("REPRODUCED (exit 42)", flush=True)
             return 42
     print("NO REPRODUCTION: every request completed", flush=True)
