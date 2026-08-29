@@ -109,6 +109,12 @@ backend's CUDA-graph padding guard: zero-length rows launch against one dummy
 slot with `topk_length=1`, then their ignored output is zeroed. Without that
 guard, the 16K-context concurrency-10 warmup can wedge the same kernel.
 
+Ray's default memory monitor kills workers at 95% host usage. GB10 GPU
+allocations are unified host memory, so this can kill a healthy rank even when
+vLLM remains within its configured GPU budget. Production containers set
+`RAY_memory_usage_threshold=0.97`, retaining roughly 3.6 GiB of emergency
+headroom instead of disabling the monitor entirely.
+
 At 100K context and concurrency 10, GMU 0.80 exposes only 1,024,452 KV tokens
 for roughly 1,020,480 requested tokens, leaving less headroom than block
 rounding and MTP bookkeeping require. The production GMU 0.82 profile exposes

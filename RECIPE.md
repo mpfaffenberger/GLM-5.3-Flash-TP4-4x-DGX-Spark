@@ -9,6 +9,7 @@ This is the validated FP8 deployment path. It copies the operational shape of th
 - Each node needs ~306 GiB for its local full Hugging Face snapshot plus healthy disk margin. Ray may evict workers when disks exceed 95%.
 - Use `glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58`. It layers the validated dense-prefix sparse-index fix over the sparse-tuned SM121 runtime. Without that final patch, the first real sparse request beyond `index_topk=2048` can permanently wedge FlashInfer's kernel.
 - Do not substitute BF16. It cannot fit this four-node cluster.
+- Set Ray's unified-memory kill threshold to `0.97` (the node launcher does this by default). Ray's stock 0.95 threshold killed a healthy GB10 TP rank at GMU 0.82; do not disable monitoring entirely.
 
 ## 1. Validate the runtime image before downloading 306 GiB four times
 

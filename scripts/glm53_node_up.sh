@@ -19,6 +19,9 @@ MODEL_CACHE_DIR=${GLM53_MODEL_CACHE_DIR:-models--unsloth--GLM-5.3-Flash-FP8}
 HCA=${GLM53_NCCL_HCA:-rocep1s0f1}
 SOCKET_IFACE=${GLM53_SOCKET_IFACE:-enp1s0f1np1}
 MTU_IFACE=${GLM53_MTU_IFACE:-enp1s0f1np1}
+# GB10 GPU allocations consume unified host memory. Ray's default 95% monitor
+# otherwise kills a healthy TP rank; retain a conservative 3% emergency margin.
+RAY_MEMORY_USAGE_THRESHOLD=${GLM53_RAY_MEMORY_USAGE_THRESHOLD:-0.97}
 
 if [[ "$GID" == auto ]]; then
   GID=$(show_gids | awk -v ip="$SELF_IP" '
@@ -69,6 +72,7 @@ docker run -d --name "$NAME" \
   -e VLLM_ALLOW_LONG_MAX_MODEL_LEN=1 \
   -e VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1800 \
   -e VLLM_LOGGING_LEVEL=INFO \
+  -e RAY_memory_usage_threshold="$RAY_MEMORY_USAGE_THRESHOLD" \
   -e VLLM_HOST_IP="$SELF_IP" \
   -e NCCL_IB_HCA="$HCA" \
   -e NCCL_SOCKET_IFNAME="$SOCKET_IFACE" \

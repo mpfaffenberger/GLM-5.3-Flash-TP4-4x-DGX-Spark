@@ -30,6 +30,8 @@ env:
   VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
   VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
   VLLM_LOGGING_LEVEL: INFO
+  # GB10 GPU allocations are unified host memory; keep a 3% Ray kill margin.
+  RAY_memory_usage_threshold: "0.97"
   NCCL_CUMEM_ENABLE: "0"
   NCCL_NVLS_ENABLE: "0"
 
