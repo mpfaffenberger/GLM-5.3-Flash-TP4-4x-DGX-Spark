@@ -12,6 +12,7 @@ WATCH_LOG=${WATCH_LOG:?set WATCH_LOG to the file whose UNTIL marker ends the wat
 UNTIL=${UNTIL:-SUITE_}
 WORKERS=${GLM53_WORKERS:-"10.0.0.13 10.0.0.150 10.0.0.246"}
 PYSPY=${GLM53_PYSPY:-$HOME/.cache/uv/archive-v0/3eVEIjOvVkqR7Wxj/bin/py-spy}
+PROGRESS=${PROGRESS:?set PROGRESS to the benchmark progress.jsonl being watched}
 OUT=$HOME/glm53-hang-dumps/stall-$(date -u +%Y%m%d-%H%M%S)
 PATTERN='No available shared memory broadcast block'
 
@@ -29,31 +30,47 @@ dump_rank() { # $1 = host ("local" for this node), $2 = output file
 }
 
 capture() {
-  mkdir -p "$OUT"
-  echo "$(date -u +%FT%TZ) STALL_CAPTURE_START $OUT"
-  dump_rank local "$OUT/rank-head.txt"
+  local dir=$OUT/$(date -u +%H%M%S)
+  mkdir -p "$dir"
+  echo "$(date -u +%FT%TZ) STALL_CAPTURE_START $dir"
+  dump_rank local "$dir/rank-head.txt"
   nvidia-smi --query-gpu=utilization.gpu,power.draw --format=csv,noheader \
-    > "$OUT/rank-head-gpu.txt" 2>&1
+    > "$dir/rank-head-gpu.txt" 2>&1
   for ip in $WORKERS; do
     scp -q "$PYSPY" "$ip:/tmp/py-spy"
-    dump_rank "$ip" "$OUT/rank-$ip.txt"
+    dump_rank "$ip" "$dir/rank-$ip.txt"
     ssh -o BatchMode=yes "$ip" \
       "nvidia-smi --query-gpu=utilization.gpu,power.draw --format=csv,noheader" \
-      > "$OUT/rank-$ip-gpu.txt" 2>&1
+      > "$dir/rank-$ip-gpu.txt" 2>&1
   done
-  docker logs --since 20m "$CONTAINER" > "$OUT/head-log-20m.txt" 2>&1
-  date -u +%FT%TZ > "$OUT/DONE"
-  echo "$(date -u +%FT%TZ) STALL_CAPTURE_DONE $OUT"
+  docker logs --since 20m "$CONTAINER" > "$dir/head-log-20m.txt" 2>&1
+  date -u +%FT%TZ > "$dir/DONE"
+  echo "$(date -u +%FT%TZ) STALL_CAPTURE_DONE $dir"
 }
 
-streak=0
 captured=0
+prev_ends=-1
+stale=0
 while ! grep -q "$UNTIL" "$WATCH_LOG" 2>/dev/null; do
   hits=$(docker logs --since 90s "$CONTAINER" 2>&1 | grep -c "$PATTERN" || true)
-  if (( hits > 0 )); then ((streak++)); else streak=0; fi
-  if (( streak >= 2 && captured == 0 )); then
+  # The shm-broadcast notice is INFO-level and byte-identical for a healthy
+  # engine doing >60s of legitimate work (weight load, KV profiling, a 100K
+  # prefill) and for a real deadlock, so it cannot be the sole trigger.
+  # Require benchmark progress to be frozen as well.
+  ends=$(grep -c '"type": *"request_end"' "$PROGRESS" 2>/dev/null || echo 0)
+  if (( hits > 0 )) && [[ "$ends" == "$prev_ends" ]]; then
+    ((stale++))
+  else
+    stale=0
+  fi
+  prev_ends=$ends
+  if (( stale >= 2 )); then
+    ((captured++))
     capture
-    captured=1
+    # Re-arm after a cooldown so a later wedge in the same run is still caught.
+    sleep 300
+    stale=0
+    prev_ends=-1
   fi
   sleep 25
 done
