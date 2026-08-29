@@ -34,8 +34,10 @@ if [[ "${SKIP_PRELUDE:-0}" != "1" ]]; then
 
 GLM53_ENFORCE_EAGER=1 ./scripts/glm53_native_launch.sh start >>"$LOG" 2>&1 \
   || { say "ISO_LAUNCH_FAILED"; exit 1; }
+fi
 
-# Cold start is ~9.3 min per weight pass (two passes) plus KV profiling and
+# The API wait is unconditional: SKIP_PRELUDE only skips recovery and launch,
+# never the readiness gate. Cold start is ~9.3 min per weight pass (two passes) plus KV profiling and
 # autotuning, so ~18-22 min is normal. A 15-minute budget aborted a healthy
 # engine mid-load and produced a bogus ISO_API_TIMEOUT.
 for _ in $(seq 1 "${API_WAIT_LOOPS:-180}"); do
@@ -45,8 +47,6 @@ for _ in $(seq 1 "${API_WAIT_LOOPS:-180}"); do
 done
 [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 "$API" 2>/dev/null)" == 200 ]] \
   || { say "ISO_API_TIMEOUT"; exit 1; }
-
-fi
 
 mkdir -p "$RESULT"
 if ! GLM53_BENCH_RUNS=3 ./scripts/bench_c1.sh >"$RESULT/pre-c1.log" 2>&1; then
