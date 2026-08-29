@@ -115,38 +115,151 @@ def patch_fla_entry_points() -> None:
 
 
 def patch_glm_call_site() -> None:
-    old_assert = """            initial_state = gather_initial_states(
-                recurrent_state, non_spec_state_indices_tensor, has_initial_state
-            )
-            (
+    old_metadata = """        has_initial_state = attn_metadata_narrowed.has_initial_state
+        non_spec_query_start_loc = attn_metadata_narrowed.non_spec_query_start_loc
 """
-    new_assert = """            initial_state = gather_initial_states(
-                recurrent_state, non_spec_state_indices_tensor, has_initial_state
-            )
-            # Prefill metadata must be host-derived. Never silently re-enable
-            # the unsafe in-forward D2H fallback for GLM5-Next or pair indices
-            # with a different cu_seqlens view after a mixed-batch refactor.
-            assert (
-                attn_metadata_narrowed.prefill_query_start_loc
-                is non_spec_query_start_loc
-            )
-            assert attn_metadata_narrowed.chunk_indices is not None
-            (
+    new_metadata = """        has_initial_state = attn_metadata_narrowed.has_initial_state
+        non_spec_query_start_loc = attn_metadata_narrowed.non_spec_query_start_loc
+        prefill_query_start_loc = attn_metadata_narrowed.prefill_query_start_loc
+        prefill_state_indices = attn_metadata_narrowed.prefill_state_indices
+        prefill_has_initial_state = attn_metadata_narrowed.prefill_has_initial_state
+        num_decode_tokens = attn_metadata_narrowed.num_decode_tokens
 """
-    replace_once(GLM_KDA, old_assert, new_assert)
+    replace_once(GLM_KDA, old_metadata, new_metadata)
 
-    old = """                use_qk_l2norm_in_kernel=True,
+    old_split = """        use_spec = spec_sequence_masks is not None and num_spec_decodes > 0
+        # KDA gate variant: GLM5-Next checkpoints with
+"""
+    new_split = """        use_spec = spec_sequence_masks is not None and num_spec_decodes > 0
+        # Generic GDN metadata peels a plain-decode prefix from mixed batches.
+        # Process that prefix recurrently and send only the prefill tail to the
+        # chunk kernel, matching qwen_gdn_linear_attn.py.
+        split_non_spec = (
+            spec_sequence_masks is None
+            and attn_metadata_narrowed.num_prefills > 0
+            and attn_metadata_narrowed.num_decodes > 0
+        )
+        # KDA gate variant: GLM5-Next checkpoints with
+"""
+    replace_once(GLM_KDA, old_split, new_split)
+
+    old_prefill = """        if attn_metadata_narrowed.num_prefills > 0:
+            assert q_ns is not None
+            assert non_spec_state_indices_tensor is not None
+            assert has_initial_state is not None
+            initial_state = gather_initial_states(
+                recurrent_state, non_spec_state_indices_tensor, has_initial_state
+            )
+            (
+                core_attn_out_non_spec,
+                last_recurrent_state,
+            ) = chunk_kda_with_fused_gate(
+                q=_rearr(q_ns),
+                k=_rearr(k_ns),
+                v=_rearr(v_ns),
+                raw_g=g1_ns,
+                # Chunk path wants the pre-sigmoided fp32 beta (its kernels
+                # don't sigmoid); beta_ns is raw bf16 from forward.
+                beta=_cast_sigmoid(beta_ns.squeeze(0)).unsqueeze(0),
+                A_log=self.A_log,
+                g_bias=self.dt_bias,
+                initial_state=initial_state,
+                output_final_state=True,
+                use_qk_l2norm_in_kernel=True,
                 cu_seqlens=non_spec_query_start_loc,
                 safe_gate=safe_gate,
+                lower_bound=lower_bound,
+            )
+            # Init cache
+            scatter_states(
+                recurrent_state,
+                last_recurrent_state,
+                non_spec_state_indices_tensor,
+            )
 """
-    new = """                use_qk_l2norm_in_kernel=True,
-                cu_seqlens=non_spec_query_start_loc,
+    new_prefill = """        if attn_metadata_narrowed.num_prefills > 0:
+            assert q_ns is not None
+            assert k_ns is not None
+            assert v_ns is not None
+            assert g1_ns is not None
+            assert beta_ns is not None
+            assert prefill_query_start_loc is not None
+            assert prefill_state_indices is not None
+            assert prefill_has_initial_state is not None
+            assert attn_metadata_narrowed.chunk_indices is not None
+
+            if split_non_spec:
+                assert non_spec_query_start_loc is not None
+                assert non_spec_state_indices_tensor is not None
+                core_attn_out_decode, _ = fused_recurrent_kda(
+                    q=_rearr(q_ns[:num_decode_tokens]),
+                    k=_rearr(k_ns[:num_decode_tokens]),
+                    v=_rearr(v_ns[:num_decode_tokens]),
+                    g=g1_ns[:, :num_decode_tokens],
+                    beta=beta_ns[:, :num_decode_tokens],
+                    initial_state=recurrent_state,
+                    use_qk_l2norm_in_kernel=True,
+                    cu_seqlens=non_spec_query_start_loc[
+                        : attn_metadata_narrowed.num_decodes + 1
+                    ],
+                    ssm_state_indices=non_spec_state_indices_tensor,
+                    sigmoid_beta=True,
+                    a_log=self.A_log,
+                    g_bias=self.dt_bias,
+                    compute_gate=True,
+                    lower_bound=lower_bound,
+                )
+                q_prefill = q_ns[num_decode_tokens:]
+                k_prefill = k_ns[num_decode_tokens:]
+                v_prefill = v_ns[num_decode_tokens:]
+                g1_prefill = g1_ns[:, num_decode_tokens:]
+                beta_prefill = beta_ns[:, num_decode_tokens:]
+            else:
+                core_attn_out_decode = None
+                q_prefill, k_prefill, v_prefill = q_ns, k_ns, v_ns
+                g1_prefill, beta_prefill = g1_ns, beta_ns
+
+            initial_state = gather_initial_states(
+                recurrent_state, prefill_state_indices, prefill_has_initial_state
+            )
+            (
+                core_attn_out_prefill,
+                last_recurrent_state,
+            ) = chunk_kda_with_fused_gate(
+                q=_rearr(q_prefill),
+                k=_rearr(k_prefill),
+                v=_rearr(v_prefill),
+                raw_g=g1_prefill,
+                # Chunk path wants the pre-sigmoided fp32 beta (its kernels
+                # don't sigmoid); beta_prefill is raw bf16 from forward.
+                beta=_cast_sigmoid(beta_prefill.squeeze(0)).unsqueeze(0),
+                A_log=self.A_log,
+                g_bias=self.dt_bias,
+                initial_state=initial_state,
+                output_final_state=True,
+                use_qk_l2norm_in_kernel=True,
+                cu_seqlens=prefill_query_start_loc,
                 # Built from query_start_loc_cpu by GDNAttentionMetadataBuilder;
-                # avoids prepare_chunk_indices(...).tolist() in every KDA layer.
+                # never calls prepare_chunk_indices(...).tolist() in GLM.
                 chunk_indices=attn_metadata_narrowed.chunk_indices,
                 safe_gate=safe_gate,
+                lower_bound=lower_bound,
+            )
+            # Init cache for prefill requests. Recurrent KDA updated any peeled
+            # decode requests in place above.
+            scatter_states(
+                recurrent_state,
+                last_recurrent_state,
+                prefill_state_indices,
+            )
+            if split_non_spec:
+                core_attn_out_non_spec = torch.cat(
+                    [core_attn_out_decode, core_attn_out_prefill], dim=1
+                )
+            else:
+                core_attn_out_non_spec = core_attn_out_prefill
 """
-    replace_once(GLM_KDA, old, new)
+    replace_once(GLM_KDA, old_prefill, new_prefill)
 
 
 def main() -> None:
