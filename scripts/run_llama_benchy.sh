@@ -9,6 +9,9 @@ SERVED_MODEL=${GLM53_SERVED_NAME:-glm-5.3-flash-fp8}
 REVISION=${GLM53_REVISION:-a160e2291674d9e3e92e98fd82faa2544a2867a3}
 MODEL_CACHE_DIR=${GLM53_MODEL_CACHE_DIR:-models--unsloth--GLM-5.3-Flash-FP8}
 TOKENIZER=${GLM53_TOKENIZER:-$HOME/.cache/huggingface/hub/$MODEL_CACHE_DIR/snapshots/$REVISION}
+DEPTH_VALUES=${DEPTHS:-"0 4096 8192 16384 32768 65535 100000"}
+CONCURRENCY_VALUES=${CONCURRENCIES:-"1 2 5 10"}
+RUN_COUNT=${RUNS:-3}
 STAMP=$(date -u +%Y%m%d-%H%M%S)
 RESULT_DIR=${1:-$ROOT/results/llama-benchy-spark-arena-v2-$STAMP}
 
@@ -39,10 +42,10 @@ command=(
   --model "$MODEL"
   --served-model-name "$SERVED_MODEL"
   --tokenizer "$TOKENIZER"
-  --depth ${DEPTHS:-0 4096 8192 16384 32768 65535 100000}
+  --depth $DEPTH_VALUES
   --pp 2048
   --tg 128
-  --runs ${RUNS:-3}
+  --runs "$RUN_COUNT"
   # GLM defaults to reasoning; the harness's tiny "Paris" gate can consume
   # its whole budget in reasoning_content despite a healthy engine.
   --skip-coherence
@@ -51,7 +54,7 @@ command=(
   # completion_tokens remains the authoritative aggregate token count.
   --extra-body return_token_ids=false
   --enable-prefix-caching
-  --concurrency ${CONCURRENCIES:-1 2 5 10}
+  --concurrency $CONCURRENCY_VALUES
   --save-result "$RESULT_FILE"
   --format csv
   --emit-progress "$PROGRESS_FILE"
@@ -75,12 +78,22 @@ if [[ "$status" -eq 0 ]] && grep -qE \
 fi
 
 if [[ "$status" -eq 0 ]]; then
-  python3 - "$PROGRESS_FILE" "$RESULT_FILE" <<'PY_CHECK' || status=1
+  read -ra depth_list <<<"$DEPTH_VALUES"
+  read -ra concurrency_list <<<"$CONCURRENCY_VALUES"
+  expected_rows=0
+  for depth in "${depth_list[@]}"; do
+    rows_per_concurrency=4
+    [[ "$depth" == 0 ]] && rows_per_concurrency=2
+    ((expected_rows += rows_per_concurrency * ${#concurrency_list[@]}))
+  done
+  python3 - "$PROGRESS_FILE" "$RESULT_FILE" "$expected_rows" <<'PY_CHECK' \
+    || status=1
 import csv
 import json
 import sys
 
-progress_path, result_path = sys.argv[1:]
+progress_path, result_path, expected_rows_arg = sys.argv[1:]
+expected_rows = int(expected_rows_arg)
 starts = ends = 0
 errors = []
 with open(progress_path, encoding="utf-8") as progress:
@@ -93,7 +106,6 @@ with open(progress_path, encoding="utf-8") as progress:
             errors.append(event["error"])
 with open(result_path, newline="", encoding="utf-8") as results:
     rows = list(csv.DictReader(results))
-expected_rows = 104  # depth 0: 8; six nonzero depths: 6 * 16.
 if starts != ends or errors or len(rows) != expected_rows:
     raise SystemExit(
         f"invalid benchmark: starts={starts} ends={ends} "
