@@ -58,6 +58,39 @@ for i in "${!WORKERS[@]}"; do
 done
 wait
 
+# `docker rm -f` returns before the driver returns GB10 unified memory to the
+# pool, and vLLM's startup check then aborts with "Free memory on device cuda:0
+# ... is less than desired GPU memory utilization". GB10 reports memory.used as
+# N/A, so poll cudaMemGetInfo -- the same call the engine uses -- before
+# launching, and fail closed rather than start a rank that is certain to die.
+FREE_PROBE='import torch; f, t = torch.cuda.mem_get_info(0)
+print(int(f / 2**30), int(t / 2**30))'
+need_gib=$(awk -v g="$GMU" 'BEGIN { printf "%d", g * 122 - 2 }')
+wait_gpu_free() {
+  local ip free total pending deadline=$((SECONDS + 300))
+  while :; do
+    pending=''
+    for ip in "$HEAD" "${WORKERS[@]}"; do
+      if [[ "$ip" == "$HEAD" ]]; then
+        read -r free total < <(docker exec "$NAME" python3 -c "$FREE_PROBE" 2>/dev/null)
+      else
+        read -r free total < <(ssh -o BatchMode=yes "$ip" \
+          "docker exec '$NAME' python3 -c \"$(printf '%s' "$FREE_PROBE" | tr '\n' ';')\"" 2>/dev/null)
+      fi
+      [[ -z "${free:-}" ]] && pending="$pending $ip(no-probe)"
+      (( ${free:-0} < need_gib )) && pending="$pending $ip(${free:-?}GiB)"
+    done
+    [[ -z "$pending" ]] && { echo "gpu memory free on all ranks (>= ${need_gib}GiB)"; return 0; }
+    if (( SECONDS > deadline )); then
+      echo "ABORT: GPU memory not released on:$pending — run scripts/glm53_gpu_reset.sh" >&2
+      return 1
+    fi
+    echo "waiting for driver memory release:$pending"
+    sleep 15
+  done
+}
+wait_gpu_free || exit 1
+
 AUTOTUNE_ARG=--no-enable-flashinfer-autotune
 [[ "$FLASHINFER_AUTOTUNE" == 1 ]] && AUTOTUNE_ARG=--enable-flashinfer-autotune
 SPEC_ARGS=()
