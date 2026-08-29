@@ -41,17 +41,16 @@ done
 wait
 
 # Verify the wedge is actually gone: idle utilisation should be ~0% and power
-# draw single-digit-to-teens watts with almost nothing allocated.
-sleep 5
+# draw single-digit-to-teens watts. The pipeline is a string so that it can be
+# evaluated both locally and over ssh (shell functions do not cross ssh).
+PROBE='nvidia-smi --query-gpu=utilization.gpu,power.draw --format=csv,noheader,nounits \
+  | awk -F", *" "{ printf \"util=%s%% power=%sW\n\", \$1, \$2 }"'
 log "VERIFY"
 bad=0
-probe() {
-  nvidia-smi --query-gpu=utilization.gpu,power.draw,memory.used \
-    --format=csv,noheader,nounits |
-    awk -F', *' '{ printf "util=%s%% power=%sW mem=%sMiB\n", $1, $2, $3 }'
-}
 for ip in $HEAD $WORKERS; do
-  if [[ "$ip" == "$HEAD" ]]; then out=$(probe); else out=$(ssh -o BatchMode=yes "$ip" probe); fi
+  if [[ "$ip" == "$HEAD" ]]; then out=$(bash -c "$PROBE")
+  else out=$(ssh -o BatchMode=yes -o ConnectTimeout=10 "$ip" "$PROBE")
+  fi
   printf '%s %s\n' "$ip" "$out"
   if grep -qE 'util=([1-9][0-9]|100)%' <<<"$out"; then
     log "STILL_WEDGED $ip"
