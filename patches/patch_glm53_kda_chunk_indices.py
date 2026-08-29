@@ -22,7 +22,9 @@ VLLM_ROOT = Path(
     )
 )
 FLA_KDA = VLLM_ROOT / "third_party/flash_linear_attention/ops/kda.py"
+FLA_INDEX = VLLM_ROOT / "third_party/flash_linear_attention/ops/index.py"
 GLM_KDA = VLLM_ROOT / "models/glm5next/nvidia/kda.py"
+GDN_ATTN = VLLM_ROOT / "v1/attention/backends/gdn_attn.py"
 
 
 def replace_once(path: Path, old: str, new: str) -> None:
@@ -112,6 +114,114 @@ def patch_fla_entry_points() -> None:
         safe_gate=safe_gate,
 """
     replace_once(FLA_KDA, old_call, new_call)
+
+
+def patch_uncached_cpu_builders() -> None:
+    old_index = """@tensor_cache
+def prepare_lens(cu_seqlens: torch.Tensor) -> torch.Tensor:
+    return cu_seqlens[1:] - cu_seqlens[:-1]
+
+
+@tensor_cache
+def prepare_chunk_indices(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Tensor:
+    indices = torch.cat(
+        [
+            torch.arange(n)
+            for n in triton.cdiv(prepare_lens(cu_seqlens), chunk_size).tolist()
+        ]
+    )
+    return torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(cu_seqlens)
+
+
+@tensor_cache
+def prepare_chunk_offsets(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Tensor:
+    return torch.cat(
+        [cu_seqlens.new_tensor([0]), triton.cdiv(prepare_lens(cu_seqlens), chunk_size)]
+    ).cumsum(-1)
+"""
+    new_index = """def prepare_lens_uncached(cu_seqlens: torch.Tensor) -> torch.Tensor:
+    return cu_seqlens[1:] - cu_seqlens[:-1]
+
+
+@tensor_cache
+def prepare_lens(cu_seqlens: torch.Tensor) -> torch.Tensor:
+    return prepare_lens_uncached(cu_seqlens)
+
+
+def prepare_chunk_indices_uncached(
+    cu_seqlens: torch.Tensor, chunk_size: int
+) -> torch.Tensor:
+    indices = torch.cat(
+        [
+            torch.arange(n)
+            for n in triton.cdiv(
+                prepare_lens_uncached(cu_seqlens), chunk_size
+            ).tolist()
+        ]
+    )
+    return torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(cu_seqlens)
+
+
+@tensor_cache
+def prepare_chunk_indices(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Tensor:
+    return prepare_chunk_indices_uncached(cu_seqlens, chunk_size)
+
+
+def prepare_chunk_offsets_uncached(
+    cu_seqlens: torch.Tensor, chunk_size: int
+) -> torch.Tensor:
+    return torch.cat(
+        [
+            cu_seqlens.new_tensor([0]),
+            triton.cdiv(prepare_lens_uncached(cu_seqlens), chunk_size),
+        ]
+    ).cumsum(-1)
+
+
+@tensor_cache
+def prepare_chunk_offsets(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Tensor:
+    return prepare_chunk_offsets_uncached(cu_seqlens, chunk_size)
+"""
+    replace_once(FLA_INDEX, old_index, new_index)
+
+    old_builder = """                from vllm.third_party.flash_linear_attention.ops.index import (
+                    prepare_chunk_indices,
+                    prepare_chunk_offsets,
+                )
+
+                assert prefill_query_start_loc_cpu is not None
+                chunk_indices = async_tensor_h2d(
+                    prepare_chunk_indices(prefill_query_start_loc_cpu, FLA_CHUNK_SIZE),
+                    device=gpu_device,
+                )
+                chunk_offsets = async_tensor_h2d(
+                    prepare_chunk_offsets(prefill_query_start_loc_cpu, FLA_CHUNK_SIZE),
+                    device=gpu_device,
+                )
+"""
+    new_builder = """                from vllm.third_party.flash_linear_attention.ops.index import (
+                    prepare_chunk_indices_uncached,
+                    prepare_chunk_offsets_uncached,
+                )
+
+                assert prefill_query_start_loc_cpu is not None
+                # query_start_loc_cpu is a reusable scheduler buffer. The FLA
+                # tensor_cache keys by object identity, so cached helpers can
+                # return stale values after the buffer is mutated in place.
+                chunk_indices = async_tensor_h2d(
+                    prepare_chunk_indices_uncached(
+                        prefill_query_start_loc_cpu, FLA_CHUNK_SIZE
+                    ),
+                    device=gpu_device,
+                )
+                chunk_offsets = async_tensor_h2d(
+                    prepare_chunk_offsets_uncached(
+                        prefill_query_start_loc_cpu, FLA_CHUNK_SIZE
+                    ),
+                    device=gpu_device,
+                )
+"""
+    replace_once(GDN_ATTN, old_builder, new_builder)
 
 
 def patch_glm_call_site() -> None:
@@ -264,6 +374,7 @@ def patch_glm_call_site() -> None:
 
 def main() -> None:
     patch_fla_entry_points()
+    patch_uncached_cpu_builders()
     patch_glm_call_site()
 
 

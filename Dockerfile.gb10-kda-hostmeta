@@ -8,6 +8,8 @@ COPY patches/test_glm53_kda_chunk_indices.py /tmp/test_kda.py
 RUN python3 /tmp/patch_kda.py \
     && python3 -m py_compile \
        /usr/local/lib/python3.12/dist-packages/vllm/third_party/flash_linear_attention/ops/kda.py \
+       /usr/local/lib/python3.12/dist-packages/vllm/third_party/flash_linear_attention/ops/index.py \
+       /usr/local/lib/python3.12/dist-packages/vllm/v1/attention/backends/gdn_attn.py \
        /usr/local/lib/python3.12/dist-packages/vllm/models/glm5next/nvidia/kda.py \
     && python3 /tmp/test_kda.py \
     && rm /tmp/patch_kda.py /tmp/test_kda.py

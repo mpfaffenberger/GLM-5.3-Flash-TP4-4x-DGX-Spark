@@ -3,8 +3,10 @@
 
 import inspect
 
+import torch
 from vllm.models.glm5next.nvidia.kda import Glm5NextLinearAttention
-from vllm.third_party.flash_linear_attention.ops import kda
+from vllm.third_party.flash_linear_attention.ops import index, kda
+from vllm.v1.attention.backends.gdn_attn import GDNAttentionMetadataBuilder
 
 
 def main() -> None:
@@ -19,6 +21,24 @@ def main() -> None:
 
     wrapper_source = inspect.getsource(kda.chunk_kda_with_fused_gate)
     assert "chunk_indices=chunk_indices" in wrapper_source
+
+    # Scheduler CPU buffers are mutated and reused, so identity-cached results
+    # are stale after a shape change. The metadata builder must use the explicit
+    # uncached variants.
+    assert callable(index.prepare_chunk_indices_uncached)
+    assert callable(index.prepare_chunk_offsets_uncached)
+    builder_source = inspect.getsource(GDNAttentionMetadataBuilder.build)
+    assert "prepare_chunk_indices_uncached" in builder_source
+    assert "prepare_chunk_offsets_uncached" in builder_source
+
+    reused = torch.tensor([0, 65], dtype=torch.int32)
+    cached_before = index.prepare_chunk_indices(reused, 64)
+    reused.copy_(torch.tensor([0, 129], dtype=torch.int32))
+    cached_after = index.prepare_chunk_indices(reused, 64)
+    fresh_after = index.prepare_chunk_indices_uncached(reused, 64)
+    assert cached_after is cached_before
+    assert cached_after.shape == (2, 2)
+    assert fresh_after.shape == (3, 2)
 
     glm_source = inspect.getsource(Glm5NextLinearAttention._forward)
     assert "split_non_spec" in glm_source
