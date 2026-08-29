@@ -39,10 +39,10 @@ command=(
   --model "$MODEL"
   --served-model-name "$SERVED_MODEL"
   --tokenizer "$TOKENIZER"
-  --depth 0 4096 8192 16384 32768 65535 100000
+  --depth ${DEPTHS:-0 4096 8192 16384 32768 65535 100000}
   --pp 2048
   --tg 128
-  --runs 3
+  --runs ${RUNS:-3}
   # GLM defaults to reasoning; the harness's tiny "Paris" gate can consume
   # its whole budget in reasoning_content despite a healthy engine.
   --skip-coherence
@@ -51,7 +51,7 @@ command=(
   # completion_tokens remains the authoritative aggregate token count.
   --extra-body return_token_ids=false
   --enable-prefix-caching
-  --concurrency 1 2 5 10
+  --concurrency ${CONCURRENCIES:-1 2 5 10}
   --save-result "$RESULT_FILE"
   --format csv
   --emit-progress "$PROGRESS_FILE"
