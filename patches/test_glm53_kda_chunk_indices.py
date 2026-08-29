@@ -21,6 +21,8 @@ def main() -> None:
     assert "chunk_indices=chunk_indices" in wrapper_source
 
     glm_source = inspect.getsource(Glm5NextLinearAttention._forward)
+    assert "prefill_query_start_loc" in glm_source
+    assert "is non_spec_query_start_loc" in glm_source
     assert "assert attn_metadata_narrowed.chunk_indices is not None" in glm_source
     assert "chunk_indices=attn_metadata_narrowed.chunk_indices" in glm_source
 

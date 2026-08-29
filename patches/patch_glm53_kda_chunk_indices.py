@@ -124,7 +124,12 @@ def patch_glm_call_site() -> None:
                 recurrent_state, non_spec_state_indices_tensor, has_initial_state
             )
             # Prefill metadata must be host-derived. Never silently re-enable
-            # the unsafe in-forward D2H fallback for GLM5-Next.
+            # the unsafe in-forward D2H fallback for GLM5-Next or pair indices
+            # with a different cu_seqlens view after a mixed-batch refactor.
+            assert (
+                attn_metadata_narrowed.prefill_query_start_loc
+                is non_spec_query_start_loc
+            )
             assert attn_metadata_narrowed.chunk_indices is not None
             (
 """
