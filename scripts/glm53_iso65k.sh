@@ -26,19 +26,27 @@ cd "$ROOT"
 
 say "ISO_START depths=[$DEPTHS] concurrency=[$CONCURRENCIES] runs=$RUNS result=$RESULT"
 
+# SKIP_PRELUDE=1 probes an already-running engine instead of recovering and
+# relaunching, so a healthy ~20 minute cold start is not thrown away.
+if [[ "${SKIP_PRELUDE:-0}" != "1" ]]; then
 ./scripts/glm53_gpu_reset.sh "$HEAD" "$WORKERS" >>"$LOG" 2>&1 \
   || { say "ISO_RESET_FAILED"; exit 1; }
 
 GLM53_ENFORCE_EAGER=1 ./scripts/glm53_native_launch.sh start >>"$LOG" 2>&1 \
   || { say "ISO_LAUNCH_FAILED"; exit 1; }
 
-for _ in $(seq 1 90); do
+# Cold start is ~9.3 min per weight pass (two passes) plus KV profiling and
+# autotuning, so ~18-22 min is normal. A 15-minute budget aborted a healthy
+# engine mid-load and produced a bogus ISO_API_TIMEOUT.
+for _ in $(seq 1 "${API_WAIT_LOOPS:-180}"); do
   [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 "$API" 2>/dev/null)" == 200 ]] \
     && { say "ISO_API_READY"; break; }
   sleep 10
 done
 [[ "$(curl -sS -o /dev/null -w '%{http_code}' --max-time 4 "$API" 2>/dev/null)" == 200 ]] \
   || { say "ISO_API_TIMEOUT"; exit 1; }
+
+fi
 
 mkdir -p "$RESULT"
 if ! GLM53_BENCH_RUNS=3 ./scripts/bench_c1.sh >"$RESULT/pre-c1.log" 2>&1; then
