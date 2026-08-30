@@ -39,6 +39,11 @@ slower than the validated MTP3 C=1 measurements around 36.5--37.2 tok/s, so the
 current DFlash2 profile fails the promotion gate even before long-context
 stress. Working is nice; winning is the point.
 
+A second five-run gate with breakable CUDA graphs enabled produced a **24.10
+tok/s median** (22.00 minimum, 24.16 maximum). CUDA graphs were stable, but did
+not recover the performance deficit. The experimental launcher therefore
+enables graphs by default; set `GLM53_ENFORCE_EAGER=1` only for control runs.
+
 ## Build
 
 ```bash
