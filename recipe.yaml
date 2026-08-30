@@ -18,7 +18,7 @@ defaults:
   master_addr: 10.0.0.46
   master_port: 29500
   gpu_memory_utilization: 0.82
-  max_model_len: 262144
+  max_model_len: 1048576
   validated_context: 65535
   validated_concurrency: 10
   max_num_batched_tokens: 8192
@@ -100,7 +100,7 @@ metadata:
     forward-path GPU-to-CPU chunk-index synchronization, handles mixed
     decode/prefill batches, and bypasses identity caching for mutable scheduler
     CPU metadata. Focused 65K c5/c10 validation completed 90/90 requests and
-    8/8 rows. The 262K model ceiling is not a validated concurrency envelope;
+    8/8 rows. The 1M model ceiling is not a validated concurrency envelope;
     100K c10 remains unsupported on this kernel stack.
 
 executor_config:

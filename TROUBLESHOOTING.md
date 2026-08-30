@@ -14,7 +14,7 @@ The checkpoint uses blockwise FP8 (`128×128`). Confirm the selected quantized M
 
 ## OOM during weight load
 
-The checkpoint is 305.79 GiB, roughly 76.45 GiB of files per TP rank before runtime overhead. Confirm TP=4 is formed before loading. Use the validated 0.82 production utilization and 256K context; drop to 0.80 only while isolating startup headroom issues. Do not try BF16. Check host memory consumers because GB10 uses unified memory.
+The checkpoint is 305.79 GiB, roughly 76.45 GiB of files per TP rank before runtime overhead. Confirm TP=4 is formed before loading. Use the validated 0.82 production utilization and 1M configured ceiling; drop to 0.80 only while isolating startup headroom issues. Do not try BF16. Check host memory consumers because GB10 uses unified memory.
 
 ## NCCL silently stalls at first collective
 
@@ -169,6 +169,11 @@ The script stops persistence, reloads `nvidia_drm`, `nvidia_modeset`,
 `nvidia_uvm`, and `nvidia` in dependency order, then verifies idle utilization
 and power before another launch.
 
-## 1M context fails after 256K succeeds
+## A 1M request fails even though the model ceiling is 1M
 
-That is capacity tuning, not baseline failure. Record live KV-cache tokens, lower max sequences, and raise memory utilization cautiously. Test 512K before 1M after the SM121 kernel blocker is resolved. FP8 KV reduces cache cost but does not repeal arithmetic.
+`max-model-len=1048576` permits the architecture's native context window; it
+does not reserve enough KV space for multiple 1M requests. Record the live
+KV-token capacity at startup and remember that prompt plus generated tokens
+must remain within the ceiling. The published concurrency validation still
+stops at 65K c10, and 100K c10 is unsupported on the current KDA stack. FP8 KV
+reduces cache cost but does not repeal arithmetic—or kernel bugs.

@@ -42,7 +42,7 @@ The source patch, executable contracts, and image label remain reviewable here.
 | served name | `glm-5.3-flash-fp8` |
 | tensor parallelism | 4 nodes × 1 GB10 |
 | executor | native vLLM multiprocessing/NCCL, **no Ray** |
-| model context ceiling | 262,144 |
+| model context ceiling | 1,048,576 |
 | validated concurrent context | 65,535 × c10 |
 | KV dtype | FP8 |
 | max active sequences | 4 |

@@ -78,7 +78,7 @@ From rank 0/head (`10.0.0.46`):
 
 ```bash
 export GLM53_IMAGE=ghcr.io/mpfaffenberger/glm-5.3-flash-fp8-tp4-4x-dgx-spark@sha256:717d12c5fba5731562511bdca7abe60a13d54fbf310276508fbe8eb6fa5d3341
-export GLM53_MAX_MODEL_LEN=262144
+export GLM53_MAX_MODEL_LEN=1048576
 export GLM53_MAX_NUM_SEQS=4
 export GLM53_MAX_BATCHED_TOKENS=8192
 export GLM53_GPU_MEMORY_UTILIZATION=0.82
