@@ -30,6 +30,7 @@ def main() -> None:
     builder_source = inspect.getsource(GDNAttentionMetadataBuilder.build)
     assert "prepare_chunk_indices_uncached" in builder_source
     assert "prepare_chunk_offsets_uncached" in builder_source
+    assert builder_source.count("non_blocking=False") >= 2
 
     reused = torch.tensor([0, 65], dtype=torch.int32)
     cached_before = index.prepare_chunk_indices(reused, 64)

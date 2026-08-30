@@ -14,4 +14,4 @@ RUN python3 /tmp/patch_kda.py \
     && python3 /tmp/test_kda.py \
     && rm /tmp/patch_kda.py /tmp/test_kda.py
 
-LABEL ai.code-puppy.glm53-kda-chunk-indices="host-metadata-no-d2h-v1"
+LABEL ai.code-puppy.glm53-kda-chunk-indices="host-metadata-no-d2h-v2"
