@@ -1,7 +1,7 @@
 recipe_version: "3"
 name: GLM-5.3-Flash-FP8-TP4-MTP3-GB10
 model: unsloth/GLM-5.3-Flash-FP8
-container: glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta
+container: ghcr.io/mpfaffenberger/glm-5.3-flash-fp8-tp4-4x-dgx-spark@sha256:717d12c5fba5731562511bdca7abe60a13d54fbf310276508fbe8eb6fa5d3341
 runtime: vllm
 cluster_only: true
 solo_only: false
@@ -92,7 +92,9 @@ metadata:
   checkpoint_bytes: 328337455672
   checkpoint_shards: 62
   language_only: true
-  runtime_image_published: false
+  runtime_image_published: true
+  runtime_image_tag: ghcr.io/mpfaffenberger/glm-5.3-flash-fp8-tp4-4x-dgx-spark:v0.1.0
+  runtime_image_digest: sha256:717d12c5fba5731562511bdca7abe60a13d54fbf310276508fbe8eb6fa5d3341
   notes: |
     Native TP=4 over PyTorch distributed/NCCL; no Ray. The KDA patch removes
     forward-path GPU-to-CPU chunk-index synchronization, handles mixed

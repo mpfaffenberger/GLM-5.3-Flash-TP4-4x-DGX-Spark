@@ -25,8 +25,13 @@ requests are not artificially rejected, but that ceiling is not a promise of
 high-concurrency stability. The full original 104-row matrix, which includes
 100K c10, is not green.
 
-No runtime image is published to GHCR. Build the pinned derivative locally;
-the source patch, executable contracts, and image label are reviewable here.
+The runtime image is published to GHCR. Model weights are not embedded:
+
+```bash
+docker pull ghcr.io/mpfaffenberger/glm-5.3-flash-fp8-tp4-4x-dgx-spark@sha256:717d12c5fba5731562511bdca7abe60a13d54fbf310276508fbe8eb6fa5d3341
+```
+
+The source patch, executable contracts, and image label remain reviewable here.
 
 ## Validated profile
 
@@ -88,13 +93,16 @@ The base image construction and SM121 NoPE sparse-MLA compatibility patch are
 documented in [`RECIPE.md`](RECIPE.md) and
 [`SM121_NOPE_PATCH.md`](SM121_NOPE_PATCH.md).
 
+Published tags `v0.1.0` and `latest` currently resolve to the immutable digest
+shown above. Production automation should use the digest, not `latest`.
+
 ## Launch
 
 Stage the pinned model snapshot on every node, then launch all four native TP
 ranks from the head:
 
 ```bash
-export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta
+export GLM53_IMAGE=ghcr.io/mpfaffenberger/glm-5.3-flash-fp8-tp4-4x-dgx-spark@sha256:717d12c5fba5731562511bdca7abe60a13d54fbf310276508fbe8eb6fa5d3341
 export GLM53_MAX_NUM_SEQS=4
 export GLM53_MAX_BATCHED_TOKENS=8192
 export GLM53_ENFORCE_EAGER=1

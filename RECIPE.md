@@ -20,6 +20,14 @@ Do not substitute BF16; it does not leave adequate four-node runtime headroom.
 
 ## 2. Build the runtime
 
+Pull the published immutable image:
+
+```bash
+docker pull ghcr.io/mpfaffenberger/glm-5.3-flash-fp8-tp4-4x-dgx-spark@sha256:717d12c5fba5731562511bdca7abe60a13d54fbf310276508fbe8eb6fa5d3341
+```
+
+Or build the same reviewable derivative locally.
+
 Build the repository's SM121 NoPE/top-k base chain first, then the KDA host
 metadata derivative:
 
@@ -69,7 +77,7 @@ because reboots and network changes can renumber them.
 From rank 0/head (`10.0.0.46`):
 
 ```bash
-export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta
+export GLM53_IMAGE=ghcr.io/mpfaffenberger/glm-5.3-flash-fp8-tp4-4x-dgx-spark@sha256:717d12c5fba5731562511bdca7abe60a13d54fbf310276508fbe8eb6fa5d3341
 export GLM53_MAX_MODEL_LEN=262144
 export GLM53_MAX_NUM_SEQS=4
 export GLM53_MAX_BATCHED_TOKENS=8192
