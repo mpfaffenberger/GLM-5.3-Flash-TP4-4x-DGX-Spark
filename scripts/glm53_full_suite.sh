@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Strict Spark Arena v2 suite with fail-closed validation: pre/post C=1 gates
-# and the 104-row llama-benchy matrix. Exits non-zero unless every stage
-# passes, so an invalid run can never be mistaken for a valid one.
+# and the validated llama-benchy matrix through 65K. Exits non-zero unless
+# every stage passes, so an invalid run can never be mistaken for a valid one.
 #
 # Set GLM53_ENFORCE_EAGER=1 to run the whole suite against an eager engine.
 set -uo pipefail

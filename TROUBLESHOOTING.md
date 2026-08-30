@@ -81,7 +81,7 @@ OpenAI usage metadata remains the authoritative aggregate token count.
 
 If the broadcaster is already wedged, stopping the client is insufficient.
 Stop the API, remove all four rank containers, reload `nvidia_uvm`, drop caches,
-re-form Ray, and relaunch from clean unified memory before benchmarking again.
+and relaunch native TP=4 from clean unified memory before benchmarking again.
 
 ## Requests beyond 2048 total tokens wedge without top-k compaction
 
@@ -109,76 +109,65 @@ backend's CUDA-graph padding guard: zero-length rows launch against one dummy
 slot with `topk_length=1`, then their ignored output is zeroed. Without that
 guard, the 16K-context concurrency-10 warmup can wedge the same kernel.
 
-Ray's default memory monitor kills workers at 95% host usage. GB10 GPU
-allocations are unified host memory, so this can kill a healthy rank even when
-vLLM remains within its configured GPU budget. Production containers set
-`RAY_memory_usage_threshold=0.97`, retaining roughly 3.6 GiB of emergency
-headroom instead of disabling the monitor entirely.
+Legacy Ray runs used `RAY_memory_usage_threshold=0.97` because GB10 GPU
+allocations count as host unified memory. The published native profile does not
+run Ray; keep this setting only when reproducing historical Ray evidence.
 
-At 100K context and concurrency 10, GMU 0.80 exposes only 1,024,452 KV tokens
-for roughly 1,020,480 requested tokens, leaving less headroom than block
-rounding and MTP bookkeeping require. The production GMU 0.82 profile exposes
-1,231,915 KV tokens. The exact 100K/c10 canary passed at 0.82, the API remained
-healthy, and post-stress C=1 measured 31.91 tok/s median.
+## KDA wedge at long context and concurrency
 
-A wedged compute engine survives container removal: after `docker rm -f` the
-GPU still reports ~96% utilisation at ~20 W with nothing running, and every
-fresh vLLM process inherits a dead device. Clearing it without a reboot
-requires the *full* module stack, not just `nvidia_uvm`:
+The host-metadata patch fixes two concrete defects in GLM's model-specific KDA
+path:
 
-```bash
-./scripts/glm53_gpu_reset.sh 10.0.0.46 "10.0.0.13 10.0.0.150 10.0.0.246"
-```
+- an in-forward CUDA-to-host `.tolist()` synchronization;
+- stale identity-cached chunk maps from mutable scheduler CPU tensors.
 
-That stops `nvidia-persistenced`, removes `nvidia_drm`, `nvidia_modeset`,
-`nvidia_uvm`, and `nvidia`, reloads them in dependency order, and verifies that
-utilisation actually returned to ~0%. For kernel debugging,
-`GLM53_DOCKER_ENV='CUDA_LAUNCH_BLOCKING=1'` makes every launch synchronous so
-host-side `sudo py-spy dump` identifies the actual stuck kernel.
+It also brings GLM mixed decode/prefill handling in line with Qwen GDN. Focused
+65K × `{c5,c10}` validation completed 90/90 requests and 8/8 result rows. The
+old accumulated-state failure at request 544/65K c10 was crossed cleanly.
 
-## Long sequential load wedges inside MoE shared experts
+A deeper KDA kernel defect remains at 100K. The tested scheduler ladder is:
 
-A fresh engine serves 32K at concurrency 10 without trouble, but a long
-sequential suite can wedge partway through. The first strict native full-suite
-run stopped progressing at **32K context, concurrency 5, run 1**, and was
-rejected as invalid (`64/104` valid rows; the remaining 306 request ends were
-transport failures *after* the engine had already died).
+| max sequences | 100K c5 | 100K c10 |
+|---:|---|---|
+| 10 | wedge | not reached |
+| 5 | wedge after 10 requests | not reached |
+| 4 | pass, 30/30 | wedge after 5 c10 requests |
 
-Stacks captured from all four live ranks at the wedge show **rank divergence
-inside a single MoE layer** — not a uniformly stuck kernel:
+The wedge signature is unambiguous:
 
-| Rank | Innermost frame |
-|---|---|
-| TP0 | `moe_runner._forward_impl` → `GateLinear.forward` (router) |
-| TP1 | `_maybe_apply_shared_experts` → `input_quant_fp8.forward_cuda` |
-| TP2 | same as TP1 |
-| TP3 | same as TP1 |
+- `request_end` progress stops;
+- `No available shared memory broadcast block found in 60 seconds` repeats;
+- all GPUs report about 96% utilization at only 19–24 W;
+- live rank stacks diverge inside fused chunk KDA kernels.
 
-One rank is still at the router while three have advanced into the shared
-experts, then the step never returns. The engine logs
-`No available shared memory broadcast block found in 60 seconds` once per
-minute for the full RPC window and finally aborts with
-`TimeoutError: RPC call to sample_tokens timed out`. GPUs sit at ~96% util and
-~20 W the entire time: a spinning kernel, not real work.
+The API `/v1/models` route may still return 200 because the frontend process is
+alive while the engine worker is spinning. API health alone is therefore not a
+progress signal. `scripts/glm53_stall_watch.sh` requires repeated notices plus
+stagnant request accounting before taking a live stack capture.
 
-The scheduler state at the wedge was `Running: 4, Waiting: 1` — a long prefill
-being admitted **on top of requests that were already decoding**. That also
-explains the confusing canary results: a standalone 32K×c10 burst admits every
-request at once, so each step is uniform and that mixed prefill/decode
-transition never happens, while a c5 ladder trickles admissions and hits it.
+Representative captures:
 
-Reproduce the state directly instead of replaying ~50 minutes of suite shapes:
+- max-seqs 10, 100K c5: `~/glm53-hang-dumps/stall-20260829-231037/014943`
+- max-seqs 5, 100K c5: `~/glm53-hang-dumps/stall-20260830-025747/030903`
+- max-seqs 4, 100K c10: `~/glm53-hang-dumps/stall-20260830-033341/041254`
+
+Do not promote `max-num-seqs` above 4, and do not advertise 100K c10 on this
+runtime. Nominal KV capacity is not the blocker: the max-seqs-5 c5 wedge
+occurred around half cache usage. A blocking host-to-device metadata experiment
+also reproduced the wedge and was reverted, falsifying that race hypothesis.
+
+A wedged compute engine survives container removal. After `docker rm -f`, every
+fresh vLLM process can inherit the dead device. Recover all ranks with the full
+module-stack reset:
 
 ```bash
-python3 scripts/repro_moe_wedge.py --decoding 4 --stagger 1 --iterations 4
+./scripts/glm53_gpu_reset.sh \
+  10.0.0.46 10.0.0.13 10.0.0.150 10.0.0.246
 ```
 
-It fires N long requests, waits for each to emit its first token, then admits
-one more long prefill into the live batch. Exit `42` means the wedge recurred;
-the script captures all four rank stacks and per-node power draw first. Use
-`--ramp-depths 8192,16384` to mimic the suite precursor cheaply. **No fix has
-been validated yet**; this is an open defect against the native TP=4 profile,
-and the full Spark Arena matrix is not yet green.
+The script stops persistence, reloads `nvidia_drm`, `nvidia_modeset`,
+`nvidia_uvm`, and `nvidia` in dependency order, then verifies idle utilization
+and power before another launch.
 
 ## 1M context fails after 256K succeeds
 

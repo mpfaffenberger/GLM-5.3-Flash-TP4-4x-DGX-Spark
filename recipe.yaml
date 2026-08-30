@@ -1,8 +1,7 @@
-recipe_version: "2"
-name: GLM-5.3-Flash-FP8-TP4-MTP3
+recipe_version: "3"
+name: GLM-5.3-Flash-FP8-TP4-MTP3-GB10
 model: unsloth/GLM-5.3-Flash-FP8
-# Validated SM121 NoPE runtime with sparse autotuning and dense-prefix top-k fix.
-container: glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58
+container: glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta
 runtime: vllm
 cluster_only: true
 solo_only: false
@@ -15,12 +14,18 @@ defaults:
   host: 0.0.0.0
   port: 8000
   tensor_parallel: 4
+  nnodes: 4
+  master_addr: 10.0.0.46
+  master_port: 29500
   gpu_memory_utilization: 0.82
   max_model_len: 262144
+  validated_context: 65535
+  validated_concurrency: 10
   max_num_batched_tokens: 8192
   max_num_seqs: 4
   kv_cache_dtype: fp8
   num_speculative_tokens: 3
+  enforce_eager: true
 
 env:
   HF_HUB_OFFLINE: "1"
@@ -30,11 +35,12 @@ env:
   VLLM_ALLOW_LONG_MAX_MODEL_LEN: "1"
   VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS: "1800"
   VLLM_LOGGING_LEVEL: INFO
-  # GB10 GPU allocations are unified host memory; keep a 3% Ray kill margin.
-  RAY_memory_usage_threshold: "0.97"
+  VLLM_USE_BREAKABLE_CUDAGRAPH: "0"
   NCCL_CUMEM_ENABLE: "0"
   NCCL_NVLS_ENABLE: "0"
 
+# scripts/glm53_native_launch.sh renders this command for each rank. Worker
+# ranks add --headless; rank zero serves the API. Ray is deliberately absent.
 command: |
   vllm serve {model} \
     --revision {revision} \
@@ -42,7 +48,11 @@ command: |
     --host {host} \
     --port {port} \
     --tensor-parallel-size {tensor_parallel} \
-    --distributed-executor-backend ray \
+    --distributed-executor-backend mp \
+    --nnodes {nnodes} \
+    --node-rank {node_rank} \
+    --master-addr {master_addr} \
+    --master-port {master_port} \
     --gpu-memory-utilization {gpu_memory_utilization} \
     --max-model-len {max_model_len} \
     --max-num-batched-tokens {max_num_batched_tokens} \
@@ -53,26 +63,43 @@ command: |
     --tool-call-parser glm47 \
     --enable-auto-tool-choice \
     --enable-flashinfer-autotune \
+    --enforce-eager \
     --speculative-config '{{"method":"mtp","num_speculative_tokens":{num_speculative_tokens}}}'
 
+validation:
+  status: validated-through-65k-c10
+  focused_requests: 90
+  focused_result_rows: 8
+  focused_request_errors: 0
+  unsupported:
+    - context: 100000
+      concurrency: 10
+      reason: FLA/KDA kernel wedge with repeated broadcast starvation
+    - max_num_seqs: 5
+      context: 100000
+      concurrency: 5
+      reason: FLA/KDA kernel wedge
+    - max_num_seqs: 10
+      context: 100000
+      concurrency: 5
+      reason: FLA/KDA kernel wedge
+
 metadata:
-  status: validated-fp8-language-path
   architecture: Glm5NextForConditionalGeneration
   model_params: 320B-total-18B-active
   quantization: fp8-block-128x128
   kv_dtype: fp8
   checkpoint_bytes: 328337455672
   checkpoint_shards: 62
+  language_only: true
+  runtime_image_published: false
   notes: |
-    FP8 weights only: BF16 weights are too large for four 121 GiB DGX Sparks.
-    The stock dedicated image selects FLASHINFER_MLA_SPARSE_SM120 on GB10 and
-    rejects GLM-5.3 NoPE (pe_dim=0). This recipe's tested fixed-ABI patch keeps
-    FlashInfer's 656-byte cache layout, zero-fills its RoPE region, pads NoPE
-    queries only at the backend boundary, and adapts the sparse index width.
-    The production top-k patch compacts valid sparse indices to a dense prefix
-    and passes exact per-token lengths, preventing the SM120 kernel wedge above
-    index_topk=2048. TP=4 weight load, CUDA graph capture, MTP, probes through
-    8192 tokens, long-context recall, and C=1 decode are validated. Multimodal
-    serving remains outside the validated profile.
+    Native TP=4 over PyTorch distributed/NCCL; no Ray. The KDA patch removes
+    forward-path GPU-to-CPU chunk-index synchronization, handles mixed
+    decode/prefill batches, and bypasses identity caching for mutable scheduler
+    CPU metadata. Focused 65K c5/c10 validation completed 90/90 requests and
+    8/8 rows. The 262K model ceiling is not a validated concurrency envelope;
+    100K c10 remains unsupported on this kernel stack.
+
 executor_config:
   user: root

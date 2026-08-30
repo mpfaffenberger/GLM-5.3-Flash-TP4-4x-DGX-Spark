@@ -1,69 +1,58 @@
-# RECIPE — GLM-5.3-Flash FP8 TP=4 on 4× DGX Spark
+# Deployment recipe
 
-This is the validated FP8 deployment path. It copies the operational shape of the MiniMax M3 TP=4 repository and includes the GLM-specific SM121 NoPE fixed-ABI patches required by FlashInfer sparse MLA.
+This is the supported language-only deployment path for GLM-5.3-Flash FP8 on
+four DGX Spark nodes. It uses native vLLM multi-node multiprocessing; Ray is
+not part of the production topology.
 
-## 0. Hard gates
+## 1. Hard gates
 
-- Four GB10 nodes connected through the switched RoCE fabric; all fabric NICs must use MTU 9000.
-- Docker must expose `/dev/infiniband`, host networking, host IPC, memlock, and at least `nofile=1048576`.
-- Each node needs ~306 GiB for its local full Hugging Face snapshot plus healthy disk margin. Ray may evict workers when disks exceed 95%.
-- Use `glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58`. It layers the validated dense-prefix sparse-index fix over the sparse-tuned SM121 runtime. Without that final patch, the first real sparse request beyond `index_topk=2048` can permanently wedge FlashInfer's kernel.
-- Do not substitute BF16. It cannot fit this four-node cluster.
-- Set Ray's unified-memory kill threshold to `0.97` (the node launcher does this by default). Ray's stock 0.95 threshold killed a healthy GB10 TP rank at GMU 0.82; do not disable monitoring entirely.
+- Four GB10 nodes, one GPU each, connected through switched RoCE.
+- Fabric MTU 9000 on every node.
+- Docker host networking/IPC, `/dev/infiniband`, unlimited memlock, and
+  `nofile >= 1048576`.
+- Approximately 306 GiB plus healthy disk margin for the full checkpoint on
+  every node.
+- Pinned model revision
+  `a160e2291674d9e3e92e98fd82faa2544a2867a3`.
+- `max-num-seqs=4`. Five active 100K requests reproducibly wedge KDA.
 
-## 1. Validate the runtime image before downloading 306 GiB four times
+Do not substitute BF16; it does not leave adequate four-node runtime headroom.
+
+## 2. Build the runtime
+
+Build the repository's SM121 NoPE/top-k base chain first, then the KDA host
+metadata derivative:
 
 ```bash
-docker pull vllm/vllm-openai:glm53-flash
-# Build/stage the validated sparse-tuned base first, then add the production
-# top-k compaction layer. Override BASE_IMAGE if your local base tag differs.
-docker build -f Dockerfile.gb10-topk-compact \
-  --build-arg BASE_IMAGE=glm53-vllm-gb10:nope-sm121-sparse-tuned-ray-2.58 \
-  -t glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58 .
-export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58
-docker run --rm --gpus all --entrypoint python3 "$GLM53_IMAGE" - <<'PY'
-import torch, vllm
-import flashinfer
-print("torch", torch.__version__, "cuda", torch.version.cuda)
-print("device", torch.cuda.get_device_name(), torch.cuda.get_device_capability())
-print("vllm", vllm.__version__)
-print("flashinfer", flashinfer.__version__)
-PY
+docker build -f Dockerfile.gb10-kda-hostmeta \
+  --build-arg BASE_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58 \
+  -t glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta .
 ```
 
-Also confirm that the installed vLLM recognizes `Glm5NextForConditionalGeneration`. A generic vLLM 0.25 image is too old even if its DeepSeek kernels work beautifully; model registration is not inherited through optimism.
+The historical base tag contains `ray-2.58`; the native launcher explicitly
+sets `GLM53_START_RAY=0`, and no Ray process participates in serving. The build
+executes the KDA patch contract before producing an image.
 
-## 2. Stage the pinned FP8 checkpoint
+Verify the image label on all four nodes:
 
-On one node with internet:
+```bash
+GLM53_KDA_VERIFY_ONLY=1 ./scripts/glm53_kda_patch_trial.sh
+```
+
+## 3. Stage and verify the checkpoint
 
 ```bash
 export HF_HOME="$HOME/.cache/huggingface"
 hf download unsloth/GLM-5.3-Flash-FP8 \
   --revision a160e2291674d9e3e92e98fd82faa2544a2867a3
 python3 scripts/verify_checkpoint.py
-```
-
-Then edit the destination list in `scripts/stage_model.sh` and fan it out over the fabric:
-
-```bash
 ./scripts/stage_model.sh
 ```
 
-Use `rsync --partial`, not tar pipes. Verify all 62 shards and the snapshot index on every node.
+Require all 62 shards and the index on every node. Use resumable transfer; a
+half-copied 306 GiB model is not a creative quantization format.
 
-## 3. Audit the fabric on every rank
-
-The last validated four-rank topology was:
-
-| Rank | Fabric IP | Last known GID |
-|---:|---|---:|
-| 0 | `10.0.0.46` | 3 |
-| 1 | `10.0.0.150` | 3 |
-| 2 | `10.0.0.13` | 6 |
-| 3 | `10.0.0.246` | 3 |
-
-Check rather than trust the table:
+## 4. Audit the fabric
 
 ```bash
 ip -d link show enp1s0f1np1
@@ -71,75 +60,81 @@ show_gids
 ulimit -n
 ```
 
-All `enp1s0f1np1` fabric links must report MTU 9000. Select each node's RoCE-v2 IPv4 GID. Reimages have previously reset MTU to 1500 and Docker `nofile` to 1024; either defect can stall or kill NCCL.
+Select the RoCE-v2 GID matching each node's fabric IPv4 address. The launch
+scripts discover this with `auto`. Last-known GIDs are not configuration
+because reboots and network changes can renumber them.
 
-## 4. Start Ray containers
+## 5. Launch native TP=4
 
-Run head first, then workers:
+From rank 0/head (`10.0.0.46`):
 
 ```bash
-./scripts/glm53_node_up.sh head   10.0.0.46  10.0.0.46  auto
-./scripts/glm53_node_up.sh worker 10.0.0.150 10.0.0.46  auto
-./scripts/glm53_node_up.sh worker 10.0.0.13  10.0.0.46  auto
-./scripts/glm53_node_up.sh worker 10.0.0.246 10.0.0.46  auto
+export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta
+export GLM53_MAX_MODEL_LEN=262144
+export GLM53_MAX_NUM_SEQS=4
+export GLM53_MAX_BATCHED_TOKENS=8192
+export GLM53_GPU_MEMORY_UTILIZATION=0.82
+export GLM53_KV_CACHE_DTYPE=fp8
+export GLM53_MTP_TOKENS=3
+export GLM53_ENFORCE_EAGER=1
+./scripts/glm53_native_launch.sh start
 ```
 
-On the head:
+The launcher removes stale containers, starts containers with Ray disabled,
+waits for GB10 unified memory to return, starts worker ranks 1–3 headless, and
+then starts API rank 0. Cold startup commonly takes 18–25 minutes.
+
+Do not edit an executing launch or benchmark script. Bash is surprisingly
+literal about moving floorboards.
+
+## 6. Readiness and smoke gates
 
 ```bash
-docker exec glm53-tp4 ray status
-```
-
-Require four GPUs before launching the engine. GID indices drift across reboots; `auto` resolves the RoCE-v2 GID matching each node's fabric IPv4 address and is the production setting.
-
-## 5. First serve
-
-On rank 0:
-
-```bash
-./scripts/glm53_serve.sh
-follow="${HOME}/glm53-serve.log"
-tail -f "$follow"
-```
-
-The default launch uses:
-
-- TP=4 through Ray
-- 256K context
-- FP8 KV (`fp8_ds_mla`) through the tested SM121 NoPE fixed-ABI adapter
-- MTP k=5
-- reasoning parser `glm45`
-- tool parser `glm47`
-- GPU memory utilization 0.82
-
-If MTP is the first failing gate, retry with `GLM53_MTP_TOKENS=0`; the script omits speculative config when set to zero. This diagnoses MTP separately rather than deleting it from the recipe.
-
-## 6. Acceptance gates
-
-```bash
+until curl -fsS http://127.0.0.1:8000/v1/models >/dev/null; do sleep 10; done
 python3 scripts/smoke_bench.py http://127.0.0.1:8000
+GLM53_BENCH_RUNS=3 ./scripts/bench_c1.sh
 ```
 
-Do not call the deployment verified until all of these pass:
+Require all ranks alive, coherent output, a successful second request, no NCCL
+errors, recorded KV capacity, and a passing C=1 gate.
 
-1. all 62 weight shards load on all four ranks;
-2. startup reaches `Application startup complete`;
-3. no rank is OOM-killed and restart counts remain zero;
-4. no NCCL warnings/errors appear in the successful launch log;
-5. plain chat returns coherent content;
-6. reasoning lands in `reasoning_content` rather than leaking markers;
-7. a second request succeeds (first-request-only success is a surprisingly popular lie);
-8. the live KV-cache token capacity is recorded;
-9. at least a C1 decode benchmark and a short concurrency sweep complete.
+## 7. Validate the supported envelope
 
-## 7. Expand only after baseline validation
+The strict suite runs pre/post C=1 and the default matrix through 65K:
 
-Change one variable at a time:
+```bash
+GLM53_ENFORCE_EAGER=1 ./scripts/glm53_full_suite.sh
+```
 
-1. raise GPU memory utilization in 0.01 steps;
-2. test 512K, then 1M context ceilings;
-3. compare MTP depths with identical prompts; k=3 measured 32.07 tok/s median C=1 in the clean restored FP8 profile;
-4. increase max sequences based on measured KV capacity;
-5. add multimodal encoder serving only after the language path is stable.
+Acceptance is fail-closed: request starts equal request ends, no request errors,
+every expected row exists, the API remains healthy, and post-suite C=1 passes.
 
-YAGNI applies to kernel debugging too: do not add expert parallelism, PD disaggregation, custom quant loaders, and multimodal encoder separation to the same first boot. That is not a test matrix; it is a séance.
+The focused patch validation that completed cleanly was 65K × `{c5,c10}`:
+90/90 requests, 8/8 rows, zero errors, and healthy post-C1.
+
+## 8. Unsupported 100K concurrency
+
+Testing established this boundary:
+
+- max-seqs 10: wedges at 100K c5;
+- max-seqs 5: wedges on the third 100K c5 wave;
+- max-seqs 4: 100K c5 passes 30/30, but 100K c10 wedges.
+
+The signature is repeated shared-memory broadcast starvation, no request-end
+progress, and all GPUs at approximately 96% utilization but only 19–24 W.
+Treat 100K c10 as unsupported until the FLA/KDA kernel defect is fixed.
+
+Do not increase max sequences based only on nominal KV capacity. Arithmetic can
+say “fits” while the kernel says “absolutely not.”
+
+## 9. Recovery
+
+Container removal does not clear a spinning GB10 CUDA context:
+
+```bash
+./scripts/glm53_gpu_reset.sh \
+  10.0.0.46 10.0.0.13 10.0.0.150 10.0.0.246
+```
+
+The script reloads the complete NVIDIA module stack and verifies idle power and
+utilization before another launch.

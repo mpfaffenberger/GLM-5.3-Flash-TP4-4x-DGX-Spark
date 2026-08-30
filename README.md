@@ -1,108 +1,161 @@
-# GLM-5.3-Flash on 4× DGX Spark — TP=4, FP8/NVFP4, FP8 KV, MTP
+# GLM-5.3-Flash FP8 on 4× DGX Spark
 
-Serve GLM-5.3-Flash across four NVIDIA DGX Sparks (GB10, `sm_121a`) over dedicated RoCE. The validated baseline uses [`unsloth/GLM-5.3-Flash-FP8`](https://huggingface.co/unsloth/GLM-5.3-Flash-FP8); the recipe also includes staging and launch support for [`LibertAIDAI/GLM-5.3-Flash-NVFP4`](https://huggingface.co/LibertAIDAI/GLM-5.3-Flash-NVFP4).
+Native, no-Ray tensor-parallel serving of
+[`unsloth/GLM-5.3-Flash-FP8`](https://huggingface.co/unsloth/GLM-5.3-Flash-FP8)
+across four NVIDIA DGX Spark/GB10 nodes over dedicated RoCE.
 
-> **Status:** the patched FP8 TP=4 language path is validated on four GB10 nodes: all 62 shards load, NoPE sparse-MLA cache packing works, CUDA graphs capture, MTP works, smoke tests pass, and a clean restored launch measured **32.07 tok/s median C=1** with MTP k=3 plus sparse-only autotuning. NVFP4 is retained only as experimental research material: CUTLASS reached 17.42 tok/s but failed coherence, while B12x never completed its operational startup gate.
->
-> **SM121 long-context fixes:** real sparse selection begins beyond GLM's `index_topk = 2048`. The production V2 image compacts valid entries to a dense prefix, passes explicit per-token `topk_length`, and safely substitutes CUDA-graph padding rows that would otherwise launch with length zero. Validation passed the original boundary probes, 16K/32K/65K at concurrency 10, and the exact 100K×c10 cache-capacity canary at GMU 0.82. Root-cause stack evidence remains in [`results/sm121-sparse-mla-hang-diagnosis/`](results/sm121-sparse-mla-hang-diagnosis/).
->
-> **Multi-node topology:** the active launch path is native vLLM `mp` with `--nnodes 4`, rank 0 serving the OpenAI API and ranks 1–3 running headless over PyTorch distributed/NCCL. No Ray process runs in this topology; Ray support remains only as legacy fallback. The current image tag still contains `ray-2.58` because it was cut before the topology change.
->
-> **Open defect (not yet green):** neither Ray nor native `mp` completes the full 104-row Spark Arena matrix. Ray wedged at repeated 32K×c10; native `mp` reaches 100K but wedges earlier at 32K×c5. Live four-rank stacks show TP0 still in the MoE router while TP1–TP3 have advanced into shared-expert FP8 input-quant, followed by shared-memory broadcast starvation and `RPC call to sample_tokens timed out`. Standalone 32K×c10 passes, so this is a sequence/mixed-batch-dependent defect rather than a broken kernel path. See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) and `scripts/repro_moe_wedge.py`. No runtime image has been published until a clean 104/104 run exists.
+## Validation status
 
-## Why quantized weights
+This repository publishes the strongest profile that completed repeatable
+testing. It does **not** claim that every advertised model context/concurrency
+combination is safe.
 
-GLM-5.3-Flash is a 320B-total / 18B-active multimodal MoE. The Unsloth FP8 checkpoint contains 62 safetensors shards totaling **328,337,455,672 bytes (305.79 GiB)**. TP=4 loads about **78.13 GiB per rank** in the validated runtime.
+| Workload | Result |
+|---|---|
+| C=1 decode | 36–37 tok/s median after warmup |
+| 65,535 tokens, concurrency 5 and 10 | **PASS**, 90/90 requests, 8/8 rows |
+| accumulated max-seqs-10 experiment through 65K c10 | **PASS** through the historical request-544 failure point |
+| 100,000 tokens, concurrency 5, `max-num-seqs=4` | **PASS**, 30/30 requests |
+| 100,000 tokens, concurrency 10 | **UNSUPPORTED**: KDA kernel wedge |
+| `max-num-seqs=5` or `10` at 100K c5 | **UNSUPPORTED**: KDA kernel wedge |
 
-The optional ModelOpt NVFP4-A16 checkpoint contains 120 shards totaling **194,660,206,040 bytes (181.29 GiB)**. It quantizes routed-expert weights while retaining attention, indexer, shared-expert, and MTP tensors in BF16. The BF16 source is roughly 598 GiB and does not leave adequate four-node runtime headroom, so this recipe has no BF16 serving profile.
+The published default is therefore **65K validated**, with
+`--max-num-seqs 4`. The model is configured with a 262K ceiling so individual
+requests are not artificially rejected, but that ceiling is not a promise of
+high-concurrency stability. The full original 104-row matrix, which includes
+100K c10, is not green.
 
-## Model facts
+No runtime image is published to GHCR. Build the pinned derivative locally;
+the source patch, executable contracts, and image label are reviewable here.
 
-- 45 text layers: 3 dense, 42 sparse MoE
-- 288 routed experts + 1 shared expert; 8 routed experts active per token
-- hybrid KDA linear attention, NoPE sparse MLA, and full-attention layers
-- one in-model next-token prediction layer for MTP
-- native multimodal model; this first recipe launches **language-only**
-- native context ceiling: 1,048,576 tokens
-- blockwise FP8 weights (`128×128`)
-- checkpoint revision: `a160e2291674d9e3e92e98fd82faa2544a2867a3`
+## Validated profile
 
-## Conservative first-boot profile
-
-| Setting | Initial value |
+| Setting | Value |
 |---|---:|
 | checkpoint | `unsloth/GLM-5.3-Flash-FP8` |
-| served model | `glm-5.3-flash-fp8` |
-| tensor parallelism | 4 |
-| context | 262,144 |
-| KV dtype | FP8 (`fp8_ds_mla`, patched fixed NoPE ABI) |
-| max sequences | 4 |
-| batched tokens | 8,192 |
+| revision | `a160e2291674d9e3e92e98fd82faa2544a2867a3` |
+| served name | `glm-5.3-flash-fp8` |
+| tensor parallelism | 4 nodes × 1 GB10 |
+| executor | native vLLM multiprocessing/NCCL, **no Ray** |
+| model context ceiling | 262,144 |
+| validated concurrent context | 65,535 × c10 |
+| KV dtype | FP8 |
+| max active sequences | 4 |
+| max batched tokens | 8,192 |
 | GPU memory utilization | 0.82 |
-| MTP draft tokens | 3 |
+| speculative decoding | MTP, 3 draft tokens |
+| execution mode | eager |
 
-The official vLLM recipe uses TP=4, FP8 KV, and MTP k=5. It requires vLLM 0.27.0+ integration and FlashInfer 0.6.17+ for NoPE sparse MLA. GB10 is Blackwell, but `sm_121a`/aarch64 is not the GB200 configuration used by the upstream example; treat kernel compatibility as a bring-up gate, not a paperwork exercise.
+GLM-5.3-Flash is a 320B-total/18B-active multimodal MoE. This recipe validates
+the language path only. The pinned FP8 checkpoint contains 62 shards totaling
+305.79 GiB; each node stores the complete snapshot and each TP rank loads
+roughly one quarter of the weights.
 
-## Repository layout
+## Why the KDA patch exists
 
-- [`RECIPE.md`](RECIPE.md) — staged deployment procedure
-- [`recipe.yaml`](recipe.yaml) — machine-readable serve recipe
-- [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) — expected GB10 failure gates
-- `scripts/glm53_node_up.sh` — start a rank container with validated RoCE setup
-- `scripts/glm53_native_launch.sh` — **no-Ray** TP=4 launch: rank 0 serves the
-  API, ranks 1–3 run `--headless` over PyTorch distributed rendezvous
-- `scripts/glm53_serve.sh` — launch vLLM on the head
-- `scripts/glm53_gpu_reset.sh` — clear a wedged GB10 compute engine without rebooting
-- `scripts/repro_moe_wedge.py` — fast targeted reproducer for the MoE rank-divergence wedge
-- `scripts/stage_model.sh` — FP8 checkpoint fan-out
-- `scripts/stage_nvfp4_from_246.sh` — pinned NVFP4 verify-and-fan-out pipeline
-- `scripts/fanout_cluster.sh` — this cluster's `.246 → head → workers` FP8 staging pipeline
-- `scripts/smoke_bench.py` — model, reasoning, tool-free smoke, and basic decode timing
-- `scripts/run_llama_benchy.sh` — full Spark Arena v2 depth/concurrency profile with the vLLM keepalive workaround
-- `scripts/verify_checkpoint.py` — verify revision, shard count, and index completeness
+GLM's model-specific KDA path recomputed chunk indices in the forward pass and
+called `.tolist()` on a CUDA tensor. That introduced a blocking GPU→CPU sync
+inside multi-rank execution. The patch:
 
-## Quick start
+1. builds chunk indices and offsets from scheduler CPU metadata;
+2. copies them host→device and passes them into fused KDA;
+3. splits mixed decode+prefill batches like the Qwen GDN implementation;
+4. bypasses FLA's identity cache for mutable scheduler CPU buffers.
 
-Build the small GB10 multi-node derivative of upstream's dedicated arm64 image:
+The original cache keyed tensors by object identity. vLLM reuses and mutates
+those tensors, so a shape transition could return stale chunk maps. The
+regression is executable in `patches/test_glm53_kda_chunk_indices.py`.
 
-```bash
-docker pull vllm/vllm-openai:glm53-flash
-# Build the NoPE/Ray base and sparse-tuned runtime as described in RECIPE.md,
-# then add the production dense-prefix top-k fix:
-docker build -f Dockerfile.gb10-topk-compact \
-  -t glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58 .
-export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-v2-ray-2.58
-```
+This fixes the repeatable 65K accumulated-state wedge. A deeper long-prefill
+KDA kernel defect remains at 100K concurrency; it is documented rather than
+papered over with a cheerful YAML value.
 
-The upstream image supplies GLM-5.3, CUDA 13.0, and FlashInfer 0.6.17. The derivative only adds Ray 2.58.0 because upstream's published image targets single-node deployments.
+## Build
 
-Stage the checkpoint on every node, then start the head and workers using their fabric addresses and live RoCE-v2 GID indices:
+The KDA image layers over the locally built SM121 sparse-MLA runtime:
 
 ```bash
-./scripts/glm53_node_up.sh head   10.0.0.46  10.0.0.46  auto
-./scripts/glm53_node_up.sh worker 10.0.0.150 10.0.0.46  auto
-./scripts/glm53_node_up.sh worker 10.0.0.13  10.0.0.46  auto
-./scripts/glm53_node_up.sh worker 10.0.0.246 10.0.0.46  auto
+docker build -f Dockerfile.gb10-kda-hostmeta \
+  -t glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta .
+
+docker image inspect --format \
+  '{{index .Config.Labels "ai.code-puppy.glm53-kda-chunk-indices"}}' \
+  glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta
+# host-metadata-no-d2h-v1
 ```
 
-GID indices drift after network changes. `auto` resolves the RoCE-v2 index matching each node's fabric IPv4 address at launch time; do not bake observed indexes into automation.
+The base image construction and SM121 NoPE sparse-MLA compatibility patch are
+documented in [`RECIPE.md`](RECIPE.md) and
+[`SM121_NOPE_PATCH.md`](SM121_NOPE_PATCH.md).
 
-On the head:
+## Launch
+
+Stage the pinned model snapshot on every node, then launch all four native TP
+ranks from the head:
 
 ```bash
-./scripts/glm53_serve.sh
-python3 ./scripts/smoke_bench.py http://127.0.0.1:8000
+export GLM53_IMAGE=glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta
+export GLM53_MAX_NUM_SEQS=4
+export GLM53_MAX_BATCHED_TOKENS=8192
+export GLM53_ENFORCE_EAGER=1
+./scripts/glm53_native_launch.sh start
 ```
 
-See [`RECIPE.md`](RECIPE.md) before running this on production nodes. The SM121 NoPE fixed-ABI cache-kernel compatibility design and focused tests are documented in [`SM121_NOPE_PATCH.md`](SM121_NOPE_PATCH.md). The patch preserves FlashInfer's 656-byte cache entry by zero-filling the fixed RoPE region and padding NoPE queries only at the backend boundary.
+The launcher starts ranks 1–3 headless before rank 0 enters the distributed
+rendezvous. It discovers each node's live RoCE-v2 GID; do not hard-code GID
+indices because they drift after network changes.
 
-## Sources
+Wait for readiness, then smoke test:
 
-- Unsloth checkpoint/model card and checked-in config
-- Z.ai GLM-5.3-Flash model card
-- official vLLM GLM-5.3 recipe (vLLM 0.27.0+, TP=4, FP8 KV, MTP k=5)
-- official SGLang GLM-5.3 cookbook (dedicated integration image and GB10-relevant backend caveats)
+```bash
+curl -fsS http://127.0.0.1:8000/v1/models
+python3 scripts/smoke_bench.py http://127.0.0.1:8000
+```
+
+## Benchmark the supported envelope
+
+The default llama-benchy matrix stops at the validated 65K boundary:
+
+```bash
+GLM53_ENFORCE_EAGER=1 ./scripts/glm53_full_suite.sh
+```
+
+Run the unsupported 100K probe explicitly; never merge its partial output with
+validated results:
+
+```bash
+DEPTHS=100000 CONCURRENCIES='5 10' RUNS=3 \
+  ./scripts/run_llama_benchy.sh results/experimental-100k
+```
+
+The harness fails closed on process failures, request-count mismatches, missing
+CSV rows, request errors, or an unhealthy API. `scripts/glm53_stall_watch.sh`
+captures all rank stacks when repeated broadcast starvation coincides with
+stagnant request progress.
+
+## Recovery
+
+A wedged CUDA context survives container deletion on GB10. Recover all ranks:
+
+```bash
+./scripts/glm53_gpu_reset.sh \
+  10.0.0.46 10.0.0.13 10.0.0.150 10.0.0.246
+```
+
+See [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) for the failure signature,
+evidence paths, and why max-seqs 5/10 are not recipe defaults.
+
+## Repository map
+
+- `recipe.yaml` — machine-readable native TP=4 profile
+- `scripts/glm53_native_launch.sh` — no-Ray four-rank launcher
+- `Dockerfile.gb10-kda-hostmeta` — fail-closed KDA patch image
+- `patches/patch_glm53_kda_chunk_indices.py` — idempotent source patcher
+- `patches/test_glm53_kda_chunk_indices.py` — static and executable contracts
+- `scripts/run_llama_benchy.sh` — fail-closed benchmark harness
+- `scripts/glm53_stall_watch.sh` — live wedge evidence capture
+- `scripts/glm53_gpu_reset.sh` — module-reload recovery
 
 ## License
 
-Deployment scripts in this repository are MIT-licensed. Model weights retain their upstream license; see the checkpoint's `LICENSE` and model card.
+Deployment code is MIT-licensed. Model weights retain their upstream license.
