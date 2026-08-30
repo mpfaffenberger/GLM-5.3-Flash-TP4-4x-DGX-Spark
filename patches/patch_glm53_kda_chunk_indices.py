@@ -208,20 +208,17 @@ def prepare_chunk_offsets(cu_seqlens: torch.Tensor, chunk_size: int) -> torch.Te
                 # query_start_loc_cpu is a reusable scheduler buffer. The FLA
                 # tensor_cache keys by object identity, so cached helpers can
                 # return stale values after the buffer is mutated in place.
-                # GLM's eager-break body may consume metadata from a different
-                # CUDA stream. Complete these tiny (~1 KiB) H2D copies here so
-                # no KDA kernel can race a partially transferred chunk map.
-                chunk_indices = prepare_chunk_indices_uncached(
-                    prefill_query_start_loc_cpu, FLA_CHUNK_SIZE
-                ).to(
+                chunk_indices = async_tensor_h2d(
+                    prepare_chunk_indices_uncached(
+                        prefill_query_start_loc_cpu, FLA_CHUNK_SIZE
+                    ),
                     device=gpu_device,
-                    non_blocking=False,
                 )
-                chunk_offsets = prepare_chunk_offsets_uncached(
-                    prefill_query_start_loc_cpu, FLA_CHUNK_SIZE
-                ).to(
+                chunk_offsets = async_tensor_h2d(
+                    prepare_chunk_offsets_uncached(
+                        prefill_query_start_loc_cpu, FLA_CHUNK_SIZE
+                    ),
                     device=gpu_device,
-                    non_blocking=False,
                 )
 """
     replace_once(GDN_ATTN, old_builder, new_builder)

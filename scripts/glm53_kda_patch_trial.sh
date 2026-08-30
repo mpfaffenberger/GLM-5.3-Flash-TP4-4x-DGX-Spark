@@ -6,7 +6,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 IMAGE=${GLM53_KDA_IMAGE:-glm53-vllm-gb10:nope-sm121-topk-compact-v2-kda-hostmeta}
 HEAD=${GLM53_HEAD:-10.0.0.46}
 WORKERS=${GLM53_WORKERS:-"10.0.0.13 10.0.0.150 10.0.0.246"}
-EXPECTED_LABEL=host-metadata-no-d2h-v2
+EXPECTED_LABEL=host-metadata-no-d2h-v1
 
 verify_image() {
   local host=$1 value
