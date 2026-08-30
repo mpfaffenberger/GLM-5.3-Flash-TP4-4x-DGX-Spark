@@ -1,0 +1,228 @@
+diff --git a/vllm/model_executor/layers/attention/attention.py b/vllm/model_executor/layers/attention/attention.py
+index 8eb8aaa..4cb55db 100644
+--- a/vllm/model_executor/layers/attention/attention.py
++++ b/vllm/model_executor/layers/attention/attention.py
+@@ -245,6 +245,7 @@ class Attention(nn.Module, AttentionLayerBase):
+         mm_prefix_clamp_sliding_window: bool = False,
+         attn_backend: type[AttentionBackend] | None = None,
+         head_size_v: int | None = None,
++        non_causal_multi_token_decode: bool = False,
+         **extra_impl_args,
+     ) -> None:
+         """
+@@ -327,6 +328,7 @@ class Attention(nn.Module, AttentionLayerBase):
+         self.head_size_v = self.head_size if head_size_v is None else head_size_v
+         self.num_kv_heads = num_kv_heads
+         self.sliding_window = sliding_window
++        self.non_causal_multi_token_decode = non_causal_multi_token_decode
+         self.has_sink = extra_impl_args.get("sinks") is not None
+ 
+         # NOTE: model_config may be None during certain tests
+@@ -627,6 +629,7 @@ class Attention(nn.Module, AttentionLayerBase):
+                 dtype=self.kv_cache_torch_dtype,
+                 kv_quant_mode=quant_mode,
+                 sliding_window=self.sliding_window,
++                non_causal_multi_token_decode=self.non_causal_multi_token_decode,
+             ).real_page_size_bytes
+             sw_block_size = _largest_kernel_block_within(
+                 self.attn_backend, sw_per_token, shared_page, block_size
+@@ -640,6 +643,7 @@ class Attention(nn.Module, AttentionLayerBase):
+                 kv_quant_mode=quant_mode,
+                 sliding_window=self.sliding_window,
+                 page_size_padded=shared_page,
++                non_causal_multi_token_decode=self.non_causal_multi_token_decode,
+             )
+         elif self.kv_cache_dtype.startswith("turboquant_"):
+             from vllm.model_executor.layers.quantization.turboquant.config import (
+diff --git a/vllm/v1/core/kv_cache_utils.py b/vllm/v1/core/kv_cache_utils.py
+index 44890cc..7474617 100644
+--- a/vllm/v1/core/kv_cache_utils.py
++++ b/vllm/v1/core/kv_cache_utils.py
+@@ -984,8 +984,16 @@ def _pool_bytes_per_block(
+         # tensors, and tail layers co-own the indexer slot tensors, so a block
+         # costs one MLA page per MLA slot plus one indexer page per indexer
+         # slot (the tail rides inside the indexer page via slot-sharing).
+-        _, _, mla_names, idx_names, mla_page, idx_page, _, _ = glm5
+-        return len(mla_names) * mla_page + len(idx_names) * idx_page
++        _, _, mla_names, idx_names, mla_page, idx_page, _, _, draft_groups = glm5
++        draft_bytes = sum(
++            len(g.layer_names) * g.kv_cache_spec.page_size_bytes
++            for g in draft_groups
++        )
++        return (
++            len(mla_names) * mla_page
++            + len(idx_names) * idx_page
++            + draft_bytes
++        )
+     if _use_packed_kv_cache_config(vllm_config, kv_cache_groups):
+         # buckets = {page_size: [[layer_names], [layer_names], ...]}
+         buckets = _bucket_layers_by_page_size(kv_cache_groups)
+@@ -1411,10 +1419,15 @@ def _get_kv_cache_groups_glm5_next(
+     tail_specs = {
+         k: v for k, v in kv_cache_spec.items() if isinstance(v, KpoolTailSpec)
+     }
++    draft_specs = {
++        k: v
++        for k, v in kv_cache_spec.items()
++        if getattr(v, "non_causal_multi_token_decode", False)
++    }
+     attn_specs = {
+         k: v
+         for k, v in kv_cache_spec.items()
+-        if not isinstance(v, (MambaSpec, KpoolTailSpec))
++        if not isinstance(v, (MambaSpec, KpoolTailSpec)) and k not in draft_specs
+     }
+     if not mamba_specs or not all(
+         type(s) is MLAAttentionSpec for s in attn_specs.values()
+@@ -1475,11 +1488,19 @@ def _get_kv_cache_groups_glm5_next(
+     mamba_grouped_names: list[list[str]] = [[] for _ in range(num_groups)]
+     for k, name in enumerate(mamba_specs):
+         mamba_grouped_names[k % num_groups].append(name)
+-    return (
++    groups = (
+         [KVCacheGroupSpec(list(attn_specs), uniform_spec)]
+         + ([tail_group] if tail_group is not None else [])
+         + create_kv_cache_group_specs(padded_specs, mamba_grouped_names)
+     )
++    if draft_specs:
++        draft_groups = create_kv_cache_group_specs(
++            draft_specs, [list(draft_specs)]
++        )
++        for group in draft_groups:
++            group.is_eagle_group = True
++        groups.extend(draft_groups)
++    return groups
+ 
+ 
+ def _glm5_next_tensor_layout(
+@@ -1494,6 +1515,7 @@ def _glm5_next_tensor_layout(
+         int,
+         list[str],
+         int,
++        list[KVCacheGroupSpec],
+     ]
+     | None
+ ):
+@@ -1503,16 +1525,18 @@ def _glm5_next_tensor_layout(
+ 
+     Returns:
+       - (attn_group, mamba_groups, mla_names, idx_names, mla_page, idx_page,
+-         tail_names, tail_page)
++         tail_names, tail_page, draft_groups)
+       - None if the group config is invalid
+     """
++    draft_groups = [g for g in kv_cache_groups if g.is_eagle_group]
++    base_groups = [g for g in kv_cache_groups if not g.is_eagle_group]
+     uniform_groups = [
+         g
+-        for g in kv_cache_groups
++        for g in base_groups
+         if isinstance(g.kv_cache_spec, UniformTypeKVCacheSpecs)
+     ]
+     mamba_groups = [
+-        g for g in kv_cache_groups if isinstance(g.kv_cache_spec, MambaSpec)
++        g for g in base_groups if isinstance(g.kv_cache_spec, MambaSpec)
+     ]
+     # Both the MLA(+indexer) attn group and the kpool tail group are
+     # UniformTypeKVCacheSpecs; distinguish by the inner spec type.
+@@ -1526,7 +1550,7 @@ def _glm5_next_tensor_layout(
+             tail_group = g
+     if attn_group is None or not mamba_groups:
+         return None
+-    if len(uniform_groups) + len(mamba_groups) != len(kv_cache_groups):
++    if len(uniform_groups) + len(mamba_groups) != len(base_groups):
+         return None
+     attn_uniform = cast(UniformTypeKVCacheSpecs, attn_group.kv_cache_spec)
+     if not all(
+@@ -1569,6 +1593,7 @@ def _glm5_next_tensor_layout(
+         idx_pages.pop(),
+         tail_names,
+         tail_page,
++        draft_groups,
+     )
+ 
+ 
+@@ -1633,6 +1658,7 @@ def get_kv_cache_config_from_groups(
+             idx_page,
+             tail_names,
+             _tail_page,
++            draft_groups,
+         ) = glm5n
+         # The logical tail page (2048 B) is unused for sizing: the tail rides
+         # inside idx_page via slot-sharing. It is retained in the layout tuple
+@@ -1641,7 +1667,15 @@ def get_kv_cache_config_from_groups(
+             assert len(idx_names) == len(tail_names), (
+                 "indexer/tail layer count mismatch: cannot pair for slot-sharing"
+             )
+-        per_block = len(mla_names) * mla_page + len(idx_names) * idx_page
++        draft_bytes = sum(
++            len(g.layer_names) * g.kv_cache_spec.page_size_bytes
++            for g in draft_groups
++        )
++        per_block = (
++            len(mla_names) * mla_page
++            + len(idx_names) * idx_page
++            + draft_bytes
++        )
+         num_blocks = available_memory // per_block
+         num_blocks = may_override_num_blocks(vllm_config, num_blocks)
+         kv_cache_tensors = [
+@@ -1664,6 +1698,14 @@ def get_kv_cache_config_from_groups(
+             )
+             for i in range(len(idx_names))
+         ]
++        for group in draft_groups:
++            for layer_name in group.layer_names:
++                kv_cache_tensors.append(
++                    KVCacheTensor(
++                        size=group.kv_cache_spec.page_size_bytes * num_blocks,
++                        shared_by=[layer_name],
++                    )
++                )
+     elif _use_packed_kv_cache_config(vllm_config, kv_cache_groups):
+         # DeepSeek V4 uses the packed layout by default. Other multi-group
+         # layouts can opt in with --enable-cross-layers.
+@@ -2211,6 +2253,7 @@ def _max_memory_usage_bytes_from_groups(
+             idx_page,
+             tail_names,
+             _tail_page,
++            draft_groups,
+         ) = glm5n
+         uniform_spec = attn_group.kv_cache_spec
+         assert isinstance(uniform_spec, UniformTypeKVCacheSpecs)
+@@ -2224,7 +2267,20 @@ def _max_memory_usage_bytes_from_groups(
+             # Tail: 1 block/req (KpoolTailSpec.max_admission_blocks_per_request
+             # == 1), drawn from the shared pool.
+             blocks_needed += 1
+-        return blocks_needed * (len(mla_names) * mla_page + len(idx_names) * idx_page)
++        for group in draft_groups:
++            spec = group.kv_cache_spec
++            blocks_needed += cdiv(
++                spec.max_memory_usage_bytes(vllm_config), spec.page_size_bytes
++            )
++        draft_bytes = sum(
++            len(g.layer_names) * g.kv_cache_spec.page_size_bytes
++            for g in draft_groups
++        )
++        return blocks_needed * (
++            len(mla_names) * mla_page
++            + len(idx_names) * idx_page
++            + draft_bytes
++        )
+ 
+     # General case: group_size pools, each shared by one layer per group
+     # Memory = group_size * page_size * blocks_for_max_len
+diff --git a/vllm/v1/kv_cache_interface.py b/vllm/v1/kv_cache_interface.py
+index 1cbd82e..16ed668 100644
+--- a/vllm/v1/kv_cache_interface.py
++++ b/vllm/v1/kv_cache_interface.py
+@@ -588,6 +588,9 @@ class ChunkedLocalAttentionSpec(AttentionSpec):
+ class SlidingWindowSpec(AttentionSpec):
+     sliding_window: int
+     head_size_v: int = None  # type: ignore[assignment]
++    # Marks a speculative draft SWA group so the hybrid coordinator retains
++    # the unfinished final block across multi-token draft steps.
++    non_causal_multi_token_decode: bool = False
+ 
+     def __post_init__(self):
+         if self.head_size_v is None:

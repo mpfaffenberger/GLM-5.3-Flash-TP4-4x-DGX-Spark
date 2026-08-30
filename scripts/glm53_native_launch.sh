@@ -18,6 +18,10 @@ MAX_SEQS=${GLM53_MAX_NUM_SEQS:-4}
 BATCHED_TOKENS=${GLM53_MAX_BATCHED_TOKENS:-8192}
 KV_CACHE_DTYPE=${GLM53_KV_CACHE_DTYPE:-fp8}
 MTP_TOKENS=${GLM53_MTP_TOKENS:-3}
+# Exact JSON override for isolated non-MTP experiments (for example DFlash2).
+# When set, this takes precedence over GLM53_MTP_TOKENS without changing the
+# validated MTP3 default profile.
+SPECULATIVE_CONFIG=${GLM53_SPECULATIVE_CONFIG:-}
 FLASHINFER_AUTOTUNE=${GLM53_FLASHINFER_AUTOTUNE:-1}
 # GLM53_ENFORCE_EAGER=1 drops CUDA graph capture/replay on every rank. It is
 # both the control experiment for the cross-rank MoE divergence and a candidate
@@ -94,7 +98,9 @@ wait_gpu_free || exit 1
 AUTOTUNE_ARG=--no-enable-flashinfer-autotune
 [[ "$FLASHINFER_AUTOTUNE" == 1 ]] && AUTOTUNE_ARG=--enable-flashinfer-autotune
 SPEC_ARGS=()
-if (( MTP_TOKENS > 0 )); then
+if [[ -n "$SPECULATIVE_CONFIG" ]]; then
+  SPEC_ARGS=(--speculative-config "$SPECULATIVE_CONFIG")
+elif (( MTP_TOKENS > 0 )); then
   SPEC_ARGS=(--speculative-config "{\"method\":\"mtp\",\"num_speculative_tokens\":$MTP_TOKENS}")
 fi
 EAGER_ARGS=()

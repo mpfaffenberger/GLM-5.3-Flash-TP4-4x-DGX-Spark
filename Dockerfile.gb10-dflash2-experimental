@@ -1,0 +1,26 @@
+# Experimental DFlash2 overlay. This does not replace the validated MTP3 image.
+ARG BASE_IMAGE=ghcr.io/mpfaffenberger/glm-5.3-flash-fp8-tp4-4x-dgx-spark@sha256:717d12c5fba5731562511bdca7abe60a13d54fbf310276508fbe8eb6fa5d3341
+FROM ${BASE_IMAGE}
+
+COPY patches/dflash2 /tmp/dflash2-patches
+
+RUN set -eux; \
+    cd /usr/local/lib/python3.12/dist-packages; \
+    for patch_file in /tmp/dflash2-patches/*.patch; do \
+        patch --batch --forward -p1 < "${patch_file}"; \
+    done; \
+    python3 -m compileall -q \
+        vllm/config/vllm.py \
+        vllm/model_executor/layers/attention/attention.py \
+        vllm/model_executor/layers/logits_processor.py \
+        vllm/model_executor/models/qwen3_dflash.py \
+        vllm/model_executor/models/qwen3_dflash2.py \
+        vllm/models/glm5next/nvidia/model.py \
+        vllm/v1/core/kv_cache_utils.py \
+        vllm/v1/kv_cache_interface.py \
+        vllm/v1/worker/gpu/spec_decode/dflash2; \
+    rm -rf /tmp/dflash2-patches
+
+LABEL ai.code-puppy.glm53-dflash2="experimental-v1" \
+      ai.code-puppy.glm53-dflash2-status="not-production-validated" \
+      ai.code-puppy.glm53-dflash2-upstream="vllm-pr-52816-plus-glm5-integration"
